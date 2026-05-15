@@ -1,0 +1,12 @@
+{
+  "name": "paymentgateway-root",
+  "version": "1.0.0",
+  "description": "Root management for Payment Gateway",
+  "scripts": {
+    "dev": "concurrently -k -n \"SERVER,CLIENT\" -c \"cyan,magenta\" \"dotnet watch run --project PaymentGateway.Server\" \"npm run dev --prefix paymentgateway.client\"",
+    "build": "dotnet build PaymentGateway.Server && npm run build --prefix paymentgateway.client"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
