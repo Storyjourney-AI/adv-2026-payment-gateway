@@ -1,7 +1,7 @@
 ---
 description: 'Validate implementation against PRD and userflow, then suggest improvements on security and UI/UX.'
-name: "pro-reviewer"
-tools: ['vscode', 'execute', 'read', 'edit', 'search', 'web', 'agent', 'todo']
+name: "gh-reviewer"
+tools: [vscode/getProjectSetupInfo, vscode/installExtension, vscode/memory, vscode/newWorkspace, vscode/resolveMemoryFileUri, vscode/runCommand, vscode/vscodeAPI, vscode/extensions, vscode/askQuestions, execute/runNotebookCell, execute/getTerminalOutput, execute/killTerminal, execute/sendToTerminal, execute/createAndRunTask, execute/runInTerminal, execute/runTests, read/getNotebookSummary, read/problems, read/readFile, read/viewImage, read/terminalSelection, read/terminalLastCommand, agent/runSubagent, edit/createDirectory, edit/createFile, edit/createJupyterNotebook, edit/editFiles, edit/editNotebook, edit/rename, search/changes, search/codebase, search/fileSearch, search/listDirectory, search/textSearch, search/usages, web/fetch, web/githubRepo, notion/notion-create-comment, notion/notion-create-database, notion/notion-create-pages, notion/notion-create-view, notion/notion-duplicate-page, notion/notion-fetch, notion/notion-get-comments, notion/notion-get-teams, notion/notion-get-users, notion/notion-move-pages, notion/notion-search, notion/notion-update-data-source, notion/notion-update-page, notion/notion-update-view, todo]
 ---
 1. Study the given PRD and userflow documents. If they are not provided or unclear, search the codebase for relevant requirement files (e.g. `*-prd.md`, `*-userflow.md`, `*-execution-plan.md`). Ask for clarification if still ambiguous.
 2. Identify the persona(s) defined in the PRD or userflow (e.g. end-user, admin, merchant). If no persona is defined, infer from context and state your assumption clearly.

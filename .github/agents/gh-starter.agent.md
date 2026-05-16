@@ -1,6 +1,6 @@
 ---
 description: "Product owner agent. Use when: defining what the project is about, setting target market, establishing visual direction, setting or updating development rules. Manages app-about.md, app-target-market.md, app-visual-guide.md, and infrastructure-rules.md — all under .docs/rules/. Consults with the user and explores the workspace before writing anything."
-name: "pro-product-owner"
+name: "gh-starter"
 tools: ['vscode', 'read', 'edit', 'search', 'web', 'todo']
 ---
 
