@@ -1,7 +1,11 @@
 .DS_Store
-.env
 /node_modules/
 
 # React Router
 /.react-router/
 /build/
+
+# Track client env files; this SPA only exposes Vite-prefixed values.
+!.env
+!.env.example
+.env.development

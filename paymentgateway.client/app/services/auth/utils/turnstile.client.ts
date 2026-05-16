@@ -14,6 +14,12 @@ declare global {
 let scriptLoadPromise: Promise<void> | null = null;
 let currentExecution: Promise<string> | null = null;
 
+function getEnabledFlag(): boolean {
+  return (import.meta.env.VITE_TURNSTILE_ENABLED || "")
+    .trim()
+    .toLowerCase() === "true";
+}
+
 function getSiteKey(): string {
   return (import.meta.env.VITE_TURNSTILE_SITE_KEY || "").trim();
 }
@@ -59,7 +65,7 @@ function ensureTurnstileScript(): Promise<void> {
 }
 
 export function isTurnstileEnabled(): boolean {
-  return !!getSiteKey();
+  return getEnabledFlag() && !!getSiteKey();
 }
 
 export async function getTurnstileToken(action: string): Promise<string> {
