@@ -20,6 +20,10 @@ namespace PaymentGateway.Server.Applications.Models.Dtos
         [StringLength(500, ErrorMessage = "SuccessResponseUrl cannot exceed 500 characters")]
         public string SuccessResponseUrl { get; set; } = string.Empty;
 
+        [Url(ErrorMessage = "PendingResponseUrl must be a valid URL")]
+        [StringLength(500, ErrorMessage = "PendingResponseUrl cannot exceed 500 characters")]
+        public string? PendingResponseUrl { get; set; }
+
         [Required(ErrorMessage = "FailureResponseUrl is required")]
         [Url(ErrorMessage = "FailureResponseUrl must be a valid URL")]
         [StringLength(500, ErrorMessage = "FailureResponseUrl cannot exceed 500 characters")]

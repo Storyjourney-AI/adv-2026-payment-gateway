@@ -5,6 +5,7 @@ using PaymentGateway.Server.Authorization.Utils;
 using PaymentGateway.Server.Common.Models;
 using PaymentGateway.Server.Databases;
 using PaymentGateway.Server.Midtrans.Models;
+using PaymentGateway.Server.Midtrans.Services;
 using PaymentGateway.Server.Security.Captcha;
 using PaymentGateway.Server.Security.Operations;
 using PaymentGateway.Server.Security.RateLimiting;
@@ -144,6 +145,7 @@ builder.Services.Configure<RateLimitSettings>(builder.Configuration.GetSection("
 builder.Services.Configure<TurnstileOptions>(builder.Configuration.GetSection("Turnstile"));
 builder.Services.Configure<WebhookHardeningOptions>(builder.Configuration.GetSection("WebhookHardening"));
 builder.Services.AddScoped<ITurnstileValidationService, TurnstileValidationService>();
+builder.Services.AddScoped<IMidtransTransactionReconciliationService, MidtransTransactionReconciliationService>();
 builder.Services.AddSingleton<IWebhookReplayGuard, WebhookReplayGuard>();
 builder.Services.AddSingleton<ISecurityMetricsService, SecurityMetricsService>();
 

@@ -28,6 +28,7 @@ export interface Dto_EnvironmentRequest {
   allowedOrigins?: string;
   webhookUrl?: string;
   successResponseUrl: string;
+  pendingResponseUrl?: string;
   failureResponseUrl: string;
   isSandbox?: boolean;
 }
@@ -40,6 +41,7 @@ export interface Dto_EnvironmentResponse {
   allowedOrigins: string;
   webhookUrl?: string;
   successResponseUrl: string;
+  pendingResponseUrl: string;
   failureResponseUrl: string;
   isSandbox: boolean;
   createdAt: string;

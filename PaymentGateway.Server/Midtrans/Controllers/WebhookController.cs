@@ -1,10 +1,9 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
-using PaymentGateway.Server.Databases;
 using PaymentGateway.Server.Midtrans.Models;
+using PaymentGateway.Server.Midtrans.Services;
 using PaymentGateway.Server.Midtrans.Utils;
 using PaymentGateway.Server.Security.Operations;
 using PaymentGateway.Server.Security.RateLimiting;
@@ -22,29 +21,29 @@ namespace PaymentGateway.Server.Midtrans.Controllers
     [AllowAnonymous]
     public class WebhookController : ControllerBase
     {
-        private readonly AppDbContext m_dbContext;
         private readonly MidtransOptions m_midtransOptions;
         private readonly WebhookHardeningOptions m_webhookHardeningOptions;
         private readonly IHttpClientFactory m_httpClientFactory;
         private readonly IWebhookReplayGuard m_webhookReplayGuard;
         private readonly ISecurityMetricsService m_securityMetricsService;
+        private readonly IMidtransTransactionReconciliationService m_midtransTransactionReconciliationService;
         private readonly ILogger<WebhookController> m_logger;
 
         public WebhookController(
-            AppDbContext dbContext,
             IOptions<MidtransOptions> midtransOptions,
             IOptions<WebhookHardeningOptions> webhookHardeningOptions,
             IHttpClientFactory httpClientFactory,
             IWebhookReplayGuard webhookReplayGuard,
             ISecurityMetricsService securityMetricsService,
+            IMidtransTransactionReconciliationService midtransTransactionReconciliationService,
             ILogger<WebhookController> logger)
         {
-            m_dbContext = dbContext;
             m_midtransOptions = midtransOptions.Value;
             m_webhookHardeningOptions = webhookHardeningOptions.Value;
             m_httpClientFactory = httpClientFactory;
             m_webhookReplayGuard = webhookReplayGuard;
             m_securityMetricsService = securityMetricsService;
+            m_midtransTransactionReconciliationService = midtransTransactionReconciliationService;
             m_logger = logger;
         }
 
@@ -161,27 +160,33 @@ namespace PaymentGateway.Server.Midtrans.Controllers
                 return Ok();
             }
 
-            // 8. Look up Snap transaction log by MidtransOrderId
-            var snapTransaction = await m_dbContext.SnapTransactions
-                .Include(t => t.Environment)
-                .FirstOrDefaultAsync(t => t.MidtransOrderId == orderId);
-
-            if (snapTransaction == null)
+            MidtransTransactionReconciliationResult? reconciliationResult;
+            try
+            {
+                reconciliationResult = await m_midtransTransactionReconciliationService
+                    .ReconcileByMidtransOrderIdAsync(orderId, HttpContext.RequestAborted);
+            }
+            catch (MidtransStatusVerificationException ex)
             {
                 m_logger.LogWarning(
-                    "Midtrans {Env} webhook received for unknown order_id: {OrderId}. Acknowledging.",
-                    midtransEnv, orderId);
+                    ex,
+                    "Midtrans {Env} webhook status verification failed for order_id {OrderId}. Acknowledging without state update.",
+                    midtransEnv,
+                    orderId);
                 return Ok();
             }
 
-            // 9. Update transaction status
-            snapTransaction.TransactionStatus = transactionStatus;
-            snapTransaction.MidtransTransactionId = transactionId;
-            snapTransaction.UpdatedAt = DateTime.UtcNow;
-            await m_dbContext.SaveChangesAsync();
+            if (reconciliationResult == null)
+            {
+                m_logger.LogWarning(
+                    "Midtrans {Env} webhook received for unknown order_id: {OrderId}. Acknowledging.",
+                    midtransEnv,
+                    orderId);
+                return Ok();
+            }
 
-            // 10. Forward notification to child app's registered WebhookUrl
-            var webhookUrl = snapTransaction.Environment?.WebhookUrl;
+            // 9. Forward notification to child app's registered WebhookUrl
+            var webhookUrl = reconciliationResult.Environment.WebhookUrl;
             if (!string.IsNullOrWhiteSpace(webhookUrl))
             {
                 if (!await IsWebhookUrlSafeAsync(webhookUrl))
@@ -215,10 +220,10 @@ namespace PaymentGateway.Server.Midtrans.Controllers
             {
                 m_logger.LogInformation(
                     "No WebhookUrl registered for environment {EnvId}. Skipping forwarding for order {OrderId}.",
-                    snapTransaction.EnvironmentId, orderId);
+                    reconciliationResult.Transaction.EnvironmentId, orderId);
             }
 
-            // 11. Always acknowledge to Midtrans
+            // 10. Always acknowledge to Midtrans
             return Ok();
         }
 

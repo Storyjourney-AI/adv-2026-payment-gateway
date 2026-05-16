@@ -385,10 +385,23 @@ export default function Page_ApplicationDetail() {
                     </div>
                   )}
 
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
                     <div>
                       <span className="text-muted-foreground">Success URL:</span>
                       <p className="mt-1 break-all">{env.successResponseUrl}</p>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Pending URL:</span>
+                      {env.pendingResponseUrl ? (
+                        <p className="mt-1 break-all">{env.pendingResponseUrl}</p>
+                      ) : (
+                        <div className="mt-1 space-y-1">
+                          <p className="font-medium text-muted-foreground">Not configured</p>
+                          <p className="text-xs text-muted-foreground">
+                            Falls back to Failure URL for pending callbacks.
+                          </p>
+                        </div>
+                      )}
                     </div>
                     <div>
                       <span className="text-muted-foreground">Failure URL:</span>

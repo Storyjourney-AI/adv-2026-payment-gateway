@@ -9,6 +9,7 @@ namespace PaymentGateway.Server.Applications.Models.Dtos
         public string AllowedOrigins { get; set; } = "*";
         public string? WebhookUrl { get; set; }
         public string SuccessResponseUrl { get; set; } = string.Empty;
+        public string PendingResponseUrl { get; set; } = string.Empty;
         public string FailureResponseUrl { get; set; } = string.Empty;
         public bool IsSandbox { get; set; }
         public DateTime CreatedAt { get; set; }

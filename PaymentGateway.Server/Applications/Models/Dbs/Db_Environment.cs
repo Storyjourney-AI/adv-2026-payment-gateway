@@ -11,6 +11,7 @@ namespace PaymentGateway.Server.Applications.Models.Dbs
         public string AllowedOrigins { get; set; } = "*";
         public string? WebhookUrl { get; set; }
         public string SuccessResponseUrl { get; set; } = string.Empty;
+        public string? PendingResponseUrl { get; set; }
         public string FailureResponseUrl { get; set; } = string.Empty;
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }

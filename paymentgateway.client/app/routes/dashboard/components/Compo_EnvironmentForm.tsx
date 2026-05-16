@@ -16,6 +16,7 @@ const environmentSchema = z.object({
   allowedOrigins: z.string().optional(),
   webhookUrl: z.string().url("Must be a valid URL").optional().or(z.literal("")),
   successResponseUrl: z.string().url("Must be a valid URL").min(1, "Success URL is required"),
+  pendingResponseUrl: z.string().url("Must be a valid URL").optional().or(z.literal("")),
   failureResponseUrl: z.string().url("Must be a valid URL").min(1, "Failure URL is required"),
 });
 
@@ -46,6 +47,7 @@ export function Compo_EnvironmentForm({
       allowedOrigins: environment?.allowedOrigins || "",
       webhookUrl: environment?.webhookUrl || "",
       successResponseUrl: environment?.successResponseUrl || "",
+      pendingResponseUrl: environment?.pendingResponseUrl || "",
       failureResponseUrl: environment?.failureResponseUrl || "",
     },
   });
@@ -58,6 +60,7 @@ export function Compo_EnvironmentForm({
         allowedOrigins: data.allowedOrigins || undefined,
         webhookUrl: data.webhookUrl || undefined,
         successResponseUrl: data.successResponseUrl,
+        pendingResponseUrl: data.pendingResponseUrl || undefined,
         failureResponseUrl: data.failureResponseUrl,
         ...(isEditing && { isSandbox }),
       };
@@ -120,6 +123,22 @@ export function Compo_EnvironmentForm({
         </p>
         {errors.successResponseUrl && (
           <p className="text-sm text-destructive">{errors.successResponseUrl.message}</p>
+        )}
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor="pendingResponseUrl">Pending URL</Label>
+        <Input
+          id="pendingResponseUrl"
+          {...register("pendingResponseUrl")}
+          placeholder="https://example.com/payment/pending"
+          disabled={isSubmitting}
+        />
+        <p className="text-xs text-muted-foreground">
+          Optional URL to redirect users after pending payment. Falls back to Failure URL when left blank.
+        </p>
+        {errors.pendingResponseUrl && (
+          <p className="text-sm text-destructive">{errors.pendingResponseUrl.message}</p>
         )}
       </div>
 

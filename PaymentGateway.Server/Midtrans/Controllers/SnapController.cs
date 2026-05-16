@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Npgsql;
@@ -13,6 +14,7 @@ using PaymentGateway.Server.Midtrans.Models;
 using PaymentGateway.Server.ActivityLog.Services;
 using PaymentGateway.Server.Midtrans.Models.Dbs;
 using PaymentGateway.Server.Midtrans.Models.Dtos;
+using PaymentGateway.Server.Midtrans.Services;
 using PaymentGateway.Server.Security.Operations;
 using PaymentGateway.Server.Security.RateLimiting;
 using System.Text;
@@ -43,6 +45,7 @@ namespace PaymentGateway.Server.Midtrans.Controllers
         private readonly UserManager<Db_ApplicationUser> m_userManager;
         private readonly ActivityLogService m_activityLogService;
         private readonly ISecurityMetricsService m_securityMetricsService;
+        private readonly IMidtransTransactionReconciliationService m_midtransTransactionReconciliationService;
 
         public SnapController(
             AppDbContext dbContext,
@@ -51,7 +54,8 @@ namespace PaymentGateway.Server.Midtrans.Controllers
             ILogger<SnapController> logger,
             UserManager<Db_ApplicationUser> userManager,
             ActivityLogService activityLogService,
-            ISecurityMetricsService securityMetricsService)
+            ISecurityMetricsService securityMetricsService,
+            IMidtransTransactionReconciliationService midtransTransactionReconciliationService)
         {
             m_dbContext = dbContext;
             m_midtransOptions = midtransOptions.Value;
@@ -60,6 +64,7 @@ namespace PaymentGateway.Server.Midtrans.Controllers
             m_userManager = userManager;
             m_activityLogService = activityLogService;
             m_securityMetricsService = securityMetricsService;
+            m_midtransTransactionReconciliationService = midtransTransactionReconciliationService;
         }
 
         /// <summary>
@@ -451,7 +456,7 @@ namespace PaymentGateway.Server.Midtrans.Controllers
         [EnableRateLimiting(RateLimitPolicyNames.CallbackLenient)]
         public async Task<IActionResult> Callback([FromQuery(Name = "order_id")] string orderId)
         {
-            return await HandleCallbackRedirectAsync(orderId, success: true);
+            return await HandleCallbackRedirectAsync(orderId);
         }
 
         /// <summary>
@@ -463,7 +468,31 @@ namespace PaymentGateway.Server.Midtrans.Controllers
         [EnableRateLimiting(RateLimitPolicyNames.CallbackLenient)]
         public async Task<IActionResult> SandboxCallback([FromQuery(Name = "order_id")] string orderId)
         {
-            return await HandleCallbackRedirectAsync(orderId, success: true);
+            return await HandleCallbackRedirectAsync(orderId);
+        }
+
+        /// <summary>
+        /// Unfinish redirect for production — Midtrans sends the customer here when payment remains pending or is abandoned before completion.
+        /// GET /api/midtrans/snap/callback/unfinish
+        /// </summary>
+        [HttpGet("/api/midtrans/snap/callback/unfinish")]
+        [AllowAnonymous]
+        [EnableRateLimiting(RateLimitPolicyNames.CallbackLenient)]
+        public async Task<IActionResult> CallbackUnfinish([FromQuery(Name = "order_id")] string orderId)
+        {
+            return await HandleCallbackRedirectAsync(orderId);
+        }
+
+        /// <summary>
+        /// Unfinish redirect for sandbox — Midtrans sends the customer here when payment remains pending or is abandoned before completion.
+        /// GET /api/midtrans/sandbox/snap/callback/unfinish
+        /// </summary>
+        [HttpGet("/api/midtrans/sandbox/snap/callback/unfinish")]
+        [AllowAnonymous]
+        [EnableRateLimiting(RateLimitPolicyNames.CallbackLenient)]
+        public async Task<IActionResult> SandboxCallbackUnfinish([FromQuery(Name = "order_id")] string orderId)
+        {
+            return await HandleCallbackRedirectAsync(orderId);
         }
 
         /// <summary>
@@ -475,7 +504,7 @@ namespace PaymentGateway.Server.Midtrans.Controllers
         [EnableRateLimiting(RateLimitPolicyNames.CallbackLenient)]
         public async Task<IActionResult> CallbackError([FromQuery(Name = "order_id")] string orderId)
         {
-            return await HandleCallbackRedirectAsync(orderId, success: false);
+            return await HandleCallbackRedirectAsync(orderId);
         }
 
         /// <summary>
@@ -487,39 +516,87 @@ namespace PaymentGateway.Server.Midtrans.Controllers
         [EnableRateLimiting(RateLimitPolicyNames.CallbackLenient)]
         public async Task<IActionResult> SandboxCallbackError([FromQuery(Name = "order_id")] string orderId)
         {
-            return await HandleCallbackRedirectAsync(orderId, success: false);
+            return await HandleCallbackRedirectAsync(orderId);
         }
 
-        private async Task<IActionResult> HandleCallbackRedirectAsync(string orderId, bool success)
+        private async Task<IActionResult> HandleCallbackRedirectAsync(string orderId)
         {
             if (string.IsNullOrWhiteSpace(orderId))
                 return BadRequest("Missing order_id");
 
-            var snapTransaction = await m_dbContext.SnapTransactions
-                .Include(t => t.Environment)
-                .FirstOrDefaultAsync(t => t.MidtransOrderId == orderId);
+            MidtransTransactionReconciliationResult? reconciliationResult;
+            try
+            {
+                reconciliationResult = await m_midtransTransactionReconciliationService
+                    .ReconcileByMidtransOrderIdAsync(orderId, HttpContext.RequestAborted);
+            }
+            catch (MidtransStatusVerificationException ex)
+            {
+                m_logger.LogWarning(ex, "Failed to verify Midtrans browser callback for order_id: {OrderId}", orderId);
 
-            if (snapTransaction?.Environment == null)
+                if (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    return UnprocessableEntity("Unable to verify payment with Midtrans.");
+                }
+
+                return StatusCode(502, "Failed to verify payment with Midtrans.");
+            }
+
+            if (reconciliationResult?.Environment == null)
             {
                 m_logger.LogWarning("Snap callback received for unknown order_id: {OrderId}", orderId);
                 return NotFound("Transaction not found");
             }
 
-            var env = snapTransaction.Environment;
-            var targetUrl = success ? env.SuccessResponseUrl : env.FailureResponseUrl;
+            var env = reconciliationResult.Environment;
+            var targetUrl = ResolveBrowserCallbackUrl(env, reconciliationResult.RedirectKind);
 
             if (string.IsNullOrWhiteSpace(targetUrl))
             {
                 m_logger.LogWarning(
-                    "No {Type} redirect URL configured for environment {EnvId} (order {OrderId})",
-                    success ? "success" : "failure", env.Id, orderId);
+                    "No redirect URL configured for environment {EnvId} (order {OrderId}, redirect kind {RedirectKind})",
+                    env.Id,
+                    orderId,
+                    reconciliationResult.RedirectKind);
                 return Ok("Payment processed. Please return to the application.");
             }
 
-            // Forward all Midtrans query params to the target URL
-            var qs = Request.QueryString.Value ?? string.Empty;
-            var separator = targetUrl.Contains('?') ? "&" : "?";
-            return Redirect(targetUrl + separator + qs.TrimStart('?'));
+            return Redirect(BuildVerifiedRedirectUrl(targetUrl, reconciliationResult));
+        }
+
+        internal static string? ResolveBrowserCallbackUrl(Db_Environment environment, MidtransRedirectKind redirectKind)
+        {
+            return redirectKind switch
+            {
+                MidtransRedirectKind.Success => environment.SuccessResponseUrl,
+                MidtransRedirectKind.Pending when !string.IsNullOrWhiteSpace(environment.PendingResponseUrl) => environment.PendingResponseUrl,
+                MidtransRedirectKind.Pending => environment.FailureResponseUrl,
+                _ => environment.FailureResponseUrl
+            };
+        }
+
+        private static string BuildVerifiedRedirectUrl(
+            string targetUrl,
+            MidtransTransactionReconciliationResult reconciliationResult)
+        {
+            var query = new Dictionary<string, string?>
+            {
+                ["order_id"] = reconciliationResult.Transaction.MidtransOrderId,
+                ["caller_order_id"] = reconciliationResult.Transaction.CallerOrderId,
+                ["status_code"] = reconciliationResult.VerifiedStatus.StatusCode,
+                ["transaction_status"] = reconciliationResult.VerifiedStatus.TransactionStatus,
+                ["fraud_status"] = reconciliationResult.VerifiedStatus.FraudStatus,
+                ["payment_type"] = reconciliationResult.VerifiedStatus.PaymentType,
+                ["transaction_id"] = reconciliationResult.VerifiedStatus.TransactionId,
+                ["redirect_kind"] = reconciliationResult.RedirectKind.ToString().ToLowerInvariant(),
+                ["verified"] = "true"
+            };
+
+            var filteredQuery = query
+                .Where(entry => !string.IsNullOrWhiteSpace(entry.Value))
+                .ToDictionary(entry => entry.Key, entry => entry.Value!);
+
+            return QueryHelpers.AddQueryString(targetUrl, filteredQuery);
         }
 
         private async Task<IActionResult> CreateTokenAsync(

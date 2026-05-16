@@ -83,6 +83,7 @@ namespace PaymentGateway.Server.Applications.Controllers
                         AllowedOrigins = e.AllowedOrigins,
                         WebhookUrl = e.WebhookUrl,
                         SuccessResponseUrl = e.SuccessResponseUrl,
+                        PendingResponseUrl = e.PendingResponseUrl ?? string.Empty,
                         FailureResponseUrl = e.FailureResponseUrl,
                         IsSandbox = e.IsSandbox,
                         CreatedAt = e.CreatedAt,
@@ -147,6 +148,7 @@ namespace PaymentGateway.Server.Applications.Controllers
                     AllowedOrigins = environment.AllowedOrigins,
                     WebhookUrl = environment.WebhookUrl,
                     SuccessResponseUrl = environment.SuccessResponseUrl,
+                    PendingResponseUrl = environment.PendingResponseUrl ?? string.Empty,
                     FailureResponseUrl = environment.FailureResponseUrl,
                     IsSandbox = environment.IsSandbox,
                     CreatedAt = environment.CreatedAt,
@@ -220,6 +222,7 @@ namespace PaymentGateway.Server.Applications.Controllers
                     AllowedOrigins = request.AllowedOrigins,
                     WebhookUrl = request.WebhookUrl,
                     SuccessResponseUrl = request.SuccessResponseUrl,
+                    PendingResponseUrl = NormalizeOptionalUrl(request.PendingResponseUrl),
                     FailureResponseUrl = request.FailureResponseUrl,
                     IsSandbox = true,
                     CreatedAt = DateTime.UtcNow,
@@ -243,6 +246,7 @@ namespace PaymentGateway.Server.Applications.Controllers
                     AllowedOrigins = environment.AllowedOrigins,
                     WebhookUrl = environment.WebhookUrl,
                     SuccessResponseUrl = environment.SuccessResponseUrl,
+                    PendingResponseUrl = environment.PendingResponseUrl ?? string.Empty,
                     FailureResponseUrl = environment.FailureResponseUrl,
                     IsSandbox = environment.IsSandbox,
                     CreatedAt = environment.CreatedAt,
@@ -312,6 +316,7 @@ namespace PaymentGateway.Server.Applications.Controllers
                 environment.AllowedOrigins = request.AllowedOrigins;
                 environment.WebhookUrl = request.WebhookUrl;
                 environment.SuccessResponseUrl = request.SuccessResponseUrl;
+                environment.PendingResponseUrl = NormalizeOptionalUrl(request.PendingResponseUrl);
                 environment.FailureResponseUrl = request.FailureResponseUrl;
                 if (request.IsSandbox.HasValue)
                 {
@@ -334,6 +339,7 @@ namespace PaymentGateway.Server.Applications.Controllers
                     AllowedOrigins = environment.AllowedOrigins,
                     WebhookUrl = environment.WebhookUrl,
                     SuccessResponseUrl = environment.SuccessResponseUrl,
+                    PendingResponseUrl = environment.PendingResponseUrl ?? string.Empty,
                     FailureResponseUrl = environment.FailureResponseUrl,
                     IsSandbox = environment.IsSandbox,
                     CreatedAt = environment.CreatedAt,
@@ -407,6 +413,7 @@ namespace PaymentGateway.Server.Applications.Controllers
                     AllowedOrigins = environment.AllowedOrigins,
                     WebhookUrl = environment.WebhookUrl,
                     SuccessResponseUrl = environment.SuccessResponseUrl,
+                    PendingResponseUrl = environment.PendingResponseUrl ?? string.Empty,
                     FailureResponseUrl = environment.FailureResponseUrl,
                     IsSandbox = environment.IsSandbox,
                     CreatedAt = environment.CreatedAt,
@@ -485,6 +492,11 @@ namespace PaymentGateway.Server.Applications.Controllers
                 return StatusCode(500, DataWrapper<bool>.Fail_InternalError(
                     message: "An error occurred while deleting the environment"));
             }
+        }
+
+        private static string? NormalizeOptionalUrl(string? url)
+        {
+            return string.IsNullOrWhiteSpace(url) ? null : url;
         }
     }
 }

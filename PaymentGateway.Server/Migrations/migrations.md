@@ -59,3 +59,15 @@ dotnet ef database update -c PaymentGateway.Server.Databases.AppDbContext
 ```
 
 Adds a composite unique index `IX_SnapTransactions_EnvironmentId_CallerOrderId` on the `payment.SnapTransactions` table. This enforces that each `CallerOrderId` is unique within a single environment at the database level, preventing duplicate orders even under race conditions. The existing `MidtransOrderId` unique index remains as a secondary safety net.
+
+---
+
+### task-007: Add PendingResponseUrl column to Environments table
+
+```
+dotnet ef migrations add "add-pending-response-url-to-environment" --project PaymentGateway.Server --context AppDbContext
+```
+
+Adds a nullable `PendingResponseUrl` column to `payment.Environments`.
+
+No backfill is required. Existing rows and new default environments can leave `PendingResponseUrl` blank, and the Midtrans browser callback flow falls back to `FailureResponseUrl` when no dedicated pending URL is configured.
