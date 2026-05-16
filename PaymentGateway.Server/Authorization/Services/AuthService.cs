@@ -32,6 +32,8 @@ namespace PaymentGateway.Server.Authorization.Services
         private readonly string m_jwt_audience = null;
         private readonly int m_jwt_accessTokenExpiryMinutes = 15;
         private readonly int m_jwt_refreshTokenExpiryDays = 7;
+        private readonly string? m_seedSuperAdminEmail;
+        private readonly string? m_seedSuperAdminPassword;
 
         public AuthService(
             RoleManager<Db_ApplicationRole> roleManager,
@@ -52,6 +54,8 @@ namespace PaymentGateway.Server.Authorization.Services
             m_jwt_audience = config["Jwt:Audience"] ?? throw new NullReferenceException("Jwt Audience does not exist");
             var accessTokenExpiryMinutes = config["Jwt:AccessTokenExpiryMinutes"] ?? throw new NullReferenceException("Jwt AccessTokenExpiryMinutes does not exist");
             var refreshTokenExpiryDays = config["Jwt:RefreshTokenExpiryDays"] ?? throw new NullReferenceException("Jwt RefreshTokenExpiryDays does not exist");
+            m_seedSuperAdminEmail = config["Seed:SuperAdmin:Email"]?.Trim().ToLowerInvariant();
+            m_seedSuperAdminPassword = config["Seed:SuperAdmin:Password"];
             
             m_jwt_accessTokenExpiryMinutes = int.Parse(accessTokenExpiryMinutes);
             m_jwt_refreshTokenExpiryDays = int.Parse(refreshTokenExpiryDays);
@@ -555,29 +559,51 @@ namespace PaymentGateway.Server.Authorization.Services
         {
             try
             {
-                const string superAdminEmail = "technical@advine.id";
-                const string superAdminPassword = "P@ssw0rd";
                 const string superAdminRole = "Super Admin";
+                
+                if (string.IsNullOrWhiteSpace(m_seedSuperAdminEmail) || string.IsNullOrWhiteSpace(m_seedSuperAdminPassword))
+                {
+                    Logger.LogWarning("Super admin seed skipped because Seed:SuperAdmin:Email or Seed:SuperAdmin:Password is missing.");
+                    return DataWrapper<bool>.Succeed(false, message: "Super admin seed configuration is missing.");
+                }
 
-                // Check if super admin user already exists
-                var existingUser = await m_userManager.FindByEmailAsync(superAdminEmail);
+                var existingSuperAdmins = await m_userManager.GetUsersInRoleAsync(superAdminRole);
+                if (existingSuperAdmins.Count > 0)
+                {
+                    Logger.LogInformation("Super admin seed skipped because at least one Super Admin already exists.");
+                    return DataWrapper<bool>.Succeed(false, message: "A Super Admin user already exists.");
+                }
+
+                // Reuse the configured account when it already exists, but only if there is not
+                // already another Super Admin in the system.
+                var existingUser = await m_userManager.FindByEmailAsync(m_seedSuperAdminEmail);
                 if (existingUser != null)
                 {
-                    Logger.LogInformation("Super admin user already exists: {email}", superAdminEmail);
-                    return DataWrapper<bool>.Succeed(false, message: "Super admin user already exists.");
+                    var assignRoleResult = await m_userManager.AddToRoleAsync(existingUser, superAdminRole);
+                    if (!assignRoleResult.Succeeded)
+                    {
+                        var errors = assignRoleResult.Errors.Select(e => $"[{e.Code}] {e.Description}").ToList();
+                        Logger.LogError("Failed to assign Super Admin role to existing user: {errors}", string.Join(", ", errors));
+                        return DataWrapper<bool>.Fail_InternalError(
+                            message: "Failed to assign Super Admin role to existing user.",
+                            errors: errors);
+                    }
+
+                    Logger.LogInformation("Super admin role assigned to existing user: {email}", m_seedSuperAdminEmail);
+                    return DataWrapper<bool>.Succeed(true, message: "Super admin role assigned to existing configured user.");
                 }
 
                 // Create super admin user
                 var superAdminUser = new Db_ApplicationUser
                 {
-                    Email = superAdminEmail,
-                    UserName = superAdminEmail,
+                    Email = m_seedSuperAdminEmail,
+                    UserName = m_seedSuperAdminEmail,
                     EmailConfirmed = true,
                     RegisterAt = DateTime.UtcNow,
                     IsActive = true
                 };
 
-                var createResult = await m_userManager.CreateAsync(superAdminUser, superAdminPassword);
+                var createResult = await m_userManager.CreateAsync(superAdminUser, m_seedSuperAdminPassword);
                 if (!createResult.Succeeded)
                 {
                     var errors = createResult.Errors.Select(e => $"[{e.Code}] {e.Description}").ToList();
@@ -598,7 +624,7 @@ namespace PaymentGateway.Server.Authorization.Services
                         errors: errors);
                 }
 
-                Logger.LogInformation("Super admin user created successfully: {email}", superAdminEmail);
+                Logger.LogInformation("Super admin user created successfully: {email}", m_seedSuperAdminEmail);
                 return DataWrapper<bool>.Succeed(true, message: "Super admin user created successfully.");
             }
             catch (Exception ex)
