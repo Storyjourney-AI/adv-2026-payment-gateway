@@ -1,5 +1,6 @@
 const TURNSTILE_SCRIPT_ID = "turnstile-script";
 const TURNSTILE_DEFAULT_URL = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+export const TURNSTILE_WIDGET_HOST_ID = "turnstile-widget-host";
 
 declare global {
   interface Window {
@@ -26,6 +27,26 @@ function getSiteKey(): string {
 
 function isBrowser(): boolean {
   return typeof window !== "undefined" && typeof document !== "undefined";
+}
+
+function resolveContainer(): { container: HTMLElement; cleanup: () => void } {
+  const host = document.getElementById(TURNSTILE_WIDGET_HOST_ID);
+  if (host) {
+    host.replaceChildren();
+    return {
+      container: host,
+      cleanup: () => {},
+    };
+  }
+
+  const container = document.createElement("div");
+  container.style.display = "none";
+  document.body.appendChild(container);
+
+  return {
+    container,
+    cleanup: () => container.remove(),
+  };
 }
 
 function ensureTurnstileScript(): Promise<void> {
@@ -90,12 +111,10 @@ export async function getTurnstileToken(action: string): Promise<string> {
         return;
       }
 
-      const container = document.createElement("div");
-      container.style.display = "none";
-      document.body.appendChild(container);
+      const { container, cleanup } = resolveContainer();
 
       const timeout = window.setTimeout(() => {
-        container.remove();
+        cleanup();
         reject(new Error("Turnstile verification timeout."));
       }, 20000);
 
@@ -111,7 +130,6 @@ export async function getTurnstileToken(action: string): Promise<string> {
           if (!settled) {
             settled = true;
             clearTimeout(timeout);
-            container.remove();
             resolve(token);
           }
         },
@@ -119,7 +137,7 @@ export async function getTurnstileToken(action: string): Promise<string> {
           if (!settled) {
             settled = true;
             clearTimeout(timeout);
-            container.remove();
+            cleanup();
             reject(new Error("Turnstile verification failed."));
           }
         },
@@ -127,7 +145,7 @@ export async function getTurnstileToken(action: string): Promise<string> {
           if (!settled) {
             settled = true;
             clearTimeout(timeout);
-            container.remove();
+            cleanup();
             reject(new Error("Turnstile token expired."));
           }
         },

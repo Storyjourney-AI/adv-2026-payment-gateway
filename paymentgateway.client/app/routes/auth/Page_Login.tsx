@@ -9,6 +9,7 @@ import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { useAuth } from "@services/auth";
 import type { Dto_LoginRequest } from "@services/auth";
+import { isTurnstileEnabled, TURNSTILE_WIDGET_HOST_ID } from "@services/auth/utils/turnstile.client";
 
 export function meta({}: Route.MetaArgs) {
   return [
@@ -28,6 +29,7 @@ export default function Page_Login() {
   const navigate = useNavigate();
   const { login, isAuthenticated, isLoading, error: authError } = useAuth();
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const showTurnstile = isTurnstileEnabled();
 
   const loginForm = useForm<LoginFormData>({
     resolver: zodResolver(loginSchema),
@@ -132,6 +134,17 @@ export default function Page_Login() {
               </p>
             )}
           </div>
+
+          {showTurnstile && (
+            <div className="space-y-2">
+              <Label htmlFor={TURNSTILE_WIDGET_HOST_ID}>Verification</Label>
+              <div
+                id={TURNSTILE_WIDGET_HOST_ID}
+                className="min-h-[72px] rounded-md border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900"
+                data-testid="turnstile-widget-host"
+              />
+            </div>
+          )}
 
           <Button
             type="submit"
