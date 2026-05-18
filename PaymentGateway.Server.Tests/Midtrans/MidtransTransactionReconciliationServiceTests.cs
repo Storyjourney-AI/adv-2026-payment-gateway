@@ -98,6 +98,83 @@ namespace PaymentGateway.Server.Tests.Midtrans
             Assert.Equal(HttpStatusCode.NotFound, exception.StatusCode);
         }
 
+                [Fact]
+                public async Task ReconcileByMidtransOrderIdAsync_ParsesFeeBreakdownWhenGrossAmountInfoExists()
+                {
+                        await using var dbContext = CreateDbContext();
+                        var transaction = SeedTransaction(dbContext, isSandbox: true, transactionStatus: "pending");
+                        var service = CreateService(dbContext, _ => new HttpResponseMessage(HttpStatusCode.OK)
+                        {
+                                Content = new StringContent(
+                                        """
+                                        {
+                                            "transaction_status": "settlement",
+                                            "fraud_status": "accept",
+                                            "gross_amount": "10300.00",
+                                            "transaction_id": "txn-fee-breakdown",
+                                            "payment_type": "bank_transfer",
+                                            "status_code": "200",
+                                            "status_message": "OK",
+                                            "metadata": {
+                                                "extra_info": {
+                                                    "gross_amount_info": {
+                                                        "original_amount": "10000.00",
+                                                        "customer_payment_fee": "300.00",
+                                                        "fee_percentage": "3.00"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        """,
+                                        Encoding.UTF8,
+                                        "application/json")
+                        });
+
+                        var result = await service.ReconcileByMidtransOrderIdAsync(transaction.MidtransOrderId);
+
+                        Assert.NotNull(result);
+                        Assert.Equal("10300.00", result!.StatusResponse.GrossAmount);
+                        Assert.NotNull(result.StatusResponse.FeeBreakdown);
+                        Assert.Equal(10300.00m, result.StatusResponse.FeeBreakdown!.FinalGrossAmount);
+                        Assert.Equal(10000.00m, result.StatusResponse.FeeBreakdown.OriginalAmount);
+                        Assert.Equal(300.00m, result.StatusResponse.FeeBreakdown.CustomerPaymentFee);
+                        Assert.Equal(3.00m, result.StatusResponse.FeeBreakdown.FeePercentage);
+                }
+
+                [Fact]
+                public async Task ReconcileByMidtransOrderIdAsync_FallsBackToTopLevelGrossAmountWhenGrossAmountInfoIsAbsent()
+                {
+                        await using var dbContext = CreateDbContext();
+                        var transaction = SeedTransaction(dbContext, isSandbox: true, transactionStatus: "pending");
+                        var service = CreateService(dbContext, _ => new HttpResponseMessage(HttpStatusCode.OK)
+                        {
+                                Content = new StringContent(
+                                        """
+                                        {
+                                            "transaction_status": "settlement",
+                                            "fraud_status": "accept",
+                                            "gross_amount": "10000.00",
+                                            "transaction_id": "txn-no-fee-breakdown",
+                                            "payment_type": "bank_transfer",
+                                            "status_code": "200",
+                                            "status_message": "OK"
+                                        }
+                                        """,
+                                        Encoding.UTF8,
+                                        "application/json")
+                        });
+
+                        var result = await service.ReconcileByMidtransOrderIdAsync(transaction.MidtransOrderId);
+
+                        Assert.NotNull(result);
+                        Assert.Equal("10000.00", result!.StatusResponse.GrossAmount);
+                        Assert.NotNull(result.StatusResponse.FeeBreakdown);
+                        Assert.Equal(10000.00m, result.StatusResponse.FeeBreakdown!.FinalGrossAmount);
+                        Assert.Null(result.StatusResponse.FeeBreakdown.OriginalAmount);
+                        Assert.Null(result.StatusResponse.FeeBreakdown.CustomerPaymentFee);
+                        Assert.Null(result.StatusResponse.FeeBreakdown.FeePercentage);
+                }
+
         private static AppDbContext CreateDbContext()
         {
             var options = new DbContextOptionsBuilder<AppDbContext>()

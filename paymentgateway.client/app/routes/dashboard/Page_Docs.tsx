@@ -394,20 +394,37 @@ export default function Page_Docs() {
             language="json"
             code={`{
   "success": true,
-  "message": "Transaction status retrieved",
+  "message": "Payment status retrieved successfully.",
   "data": {
     "callerOrderId": "order-001",
     "midtransOrderId": "a1b2c3d4_order-001",
-    "transactionStatus": "settlement",
+    "gatewayStatus": "settlement",
+    "midtransStatus": "settlement",
     "fraudStatus": "accept",
-    "grossAmount": "50000.00",
-    "transactionId": "midtrans-txn-id",
-    "paymentType": "bank_transfer",
-    "transactionTime": "2026-01-15 10:30:00"
+    "grossAmount": "51500.00",
+    "feeBreakdown": {
+      "finalGrossAmount": 51500.00,
+      "originalAmount": 50000.00,
+      "customerPaymentFee": 1500.00,
+      "feePercentage": 3.00
+    },
+    "midtransTransactionId": "midtrans-txn-id",
+    "paymentType": "credit_card",
+    "createdAt": "2026-01-15T10:25:00Z",
+    "updatedAt": "2026-01-15T10:30:00Z"
   },
   "errors": null
 }`}
           />
+
+          <div className="rounded-lg border bg-card p-4 space-y-2 text-sm">
+            <p>
+              <code className="bg-muted px-1.5 py-0.5 rounded text-sm font-mono">feeBreakdown</code> is derived from the verified Midtrans status response. Midtrans only exposes payer-specific fees after the customer selects a payment method inside Snap.
+            </p>
+            <p>
+              If <code className="bg-muted px-1.5 py-0.5 rounded text-sm font-mono">metadata.extra_info.gross_amount_info</code> is absent, the gateway falls back to top-level <code className="bg-muted px-1.5 py-0.5 rounded text-sm font-mono">grossAmount</code> for <code className="bg-muted px-1.5 py-0.5 rounded text-sm font-mono">feeBreakdown.finalGrossAmount</code> when available. The other fee fields remain <code className="bg-muted px-1.5 py-0.5 rounded text-sm font-mono">null</code> until Midtrans returns them.
+            </p>
+          </div>
 
           <h4 className="font-semibold">Error Codes</h4>
           <div className="rounded-lg border bg-card p-4">
@@ -471,13 +488,24 @@ export default function Page_Docs() {
             language="json"
             code={`{
   "success": true,
-  "message": "Transaction cancelled successfully",
+  "message": "Payment cancelled successfully.",
   "data": {
     "callerOrderId": "order-001",
     "midtransOrderId": "a1b2c3d4_order-001",
-    "transactionStatus": "cancel",
+    "gatewayStatus": "cancel",
+    "midtransStatus": "cancel",
+    "fraudStatus": null,
     "grossAmount": "50000.00",
-    "transactionId": "midtrans-txn-id"
+    "feeBreakdown": {
+      "finalGrossAmount": 50000.00,
+      "originalAmount": null,
+      "customerPaymentFee": null,
+      "feePercentage": null
+    },
+    "midtransTransactionId": "midtrans-txn-id",
+    "paymentType": null,
+    "createdAt": "2026-01-15T10:25:00Z",
+    "updatedAt": "2026-01-15T10:30:00Z"
   },
   "errors": null
 }`}
@@ -495,7 +523,7 @@ export default function Page_Docs() {
               <tbody>
                 <tr className="border-b"><td className="py-2 pr-4 font-mono">401</td><td className="py-2">Missing or invalid API key</td></tr>
                 <tr className="border-b"><td className="py-2 pr-4 font-mono">404</td><td className="py-2">Order ID not found for this environment</td></tr>
-                <tr className="border-b"><td className="py-2 pr-4 font-mono">409</td><td className="py-2">Transaction is not in a cancellable state</td></tr>
+                <tr className="border-b"><td className="py-2 pr-4 font-mono">422</td><td className="py-2">Transaction is not in a cancellable state</td></tr>
                 <tr><td className="py-2 pr-4 font-mono">502</td><td className="py-2">Midtrans API error</td></tr>
               </tbody>
             </table>
@@ -513,19 +541,27 @@ export default function Page_Docs() {
       <section id="webhooks" className="space-y-4">
         <h2 className="text-2xl font-bold border-b pb-2">4. Webhook Handling</h2>
         <p>
-          When a payment status changes, Midtrans sends a notification to the gateway. The gateway stores the updated status and forwards the raw Midtrans notification payload to the <code className="bg-muted px-1.5 py-0.5 rounded text-sm font-mono">WebhookUrl</code> configured on your environment.
+          When a payment status changes, Midtrans sends a notification to the gateway. The gateway stores the updated status, preserves the original Midtrans payload fields, and forwards them to the <code className="bg-muted px-1.5 py-0.5 rounded text-sm font-mono">WebhookUrl</code> configured on your environment with an added <code className="bg-muted px-1.5 py-0.5 rounded text-sm font-mono">gateway_fee_breakdown</code> field.
         </p>
 
         <h3 className="text-lg font-semibold">Notification Payload</h3>
-        <p>The forwarded payload contains the raw Midtrans notification. Key fields include:</p>
+        <p>The forwarded payload preserves the original Midtrans notification fields and appends gateway-computed fee data:</p>
         <CodeBlock
           language="json"
           code={`{
+  "transaction_time": "2026-01-15 10:30:00",
   "order_id": "a1b2c3d4_order-001",
   "transaction_status": "settlement",
   "fraud_status": "accept",
-  "gross_amount": "50000.00",
-  "transaction_id": "midtrans-txn-id"
+  "gross_amount": "51500.00",
+  "transaction_id": "midtrans-txn-id",
+  "payment_type": "credit_card",
+  "gateway_fee_breakdown": {
+    "final_gross_amount": 51500.00,
+    "original_amount": 50000.00,
+    "customer_payment_fee": 1500.00,
+    "fee_percentage": 3.00
+  }
 }`}
         />
 
@@ -534,6 +570,12 @@ export default function Page_Docs() {
           <ul className="list-disc list-inside space-y-2 text-sm">
             <li>
               The <code className="bg-muted px-1.5 py-0.5 rounded font-mono">order_id</code> in the forwarded payload is the Midtrans-prefixed ID (format: <code className="bg-muted px-1.5 py-0.5 rounded font-mono">{"{envId[0..8]}"}_{"{callerOrderId}"}</code>), not your raw caller order ID.
+            </li>
+            <li>
+              All original Midtrans fields are preserved. The gateway only appends <code className="bg-muted px-1.5 py-0.5 rounded font-mono">gateway_fee_breakdown</code>.
+            </li>
+            <li>
+              Fee-specific values are only available after the payer selects a payment method inside Snap. If Midtrans omits <code className="bg-muted px-1.5 py-0.5 rounded font-mono">metadata.extra_info.gross_amount_info</code>, <code className="bg-muted px-1.5 py-0.5 rounded font-mono">gateway_fee_breakdown.final_gross_amount</code> falls back to top-level <code className="bg-muted px-1.5 py-0.5 rounded font-mono">gross_amount</code> and the other fee fields stay <code className="bg-muted px-1.5 py-0.5 rounded font-mono">null</code>.
             </li>
             <li>
               Your webhook endpoint <strong>must return a 2xx status code</strong> to acknowledge receipt of the notification.

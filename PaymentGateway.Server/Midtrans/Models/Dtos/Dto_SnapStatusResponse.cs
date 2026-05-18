@@ -8,6 +8,7 @@ namespace PaymentGateway.Server.Midtrans.Models.Dtos
         public string? MidtransStatus { get; set; }
         public string? FraudStatus { get; set; }
         public string GrossAmount { get; set; } = string.Empty;
+        public Dto_SnapFeeBreakdown? FeeBreakdown { get; set; }
         public string? MidtransTransactionId { get; set; }
         public string? PaymentType { get; set; }
         public DateTime CreatedAt { get; set; }

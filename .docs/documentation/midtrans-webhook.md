@@ -12,11 +12,11 @@ When a customer completes a payment (or a transaction status changes), Midtrans 
 **This gateway's role in the webhook flow:**
 
 ```
-Midtrans → POST /api/webhook/midtrans/{env}  (this gateway)
+Midtrans → POST /api/midtrans/sandbox/payment or /api/midtrans/payment  (this gateway)
                 ↓
           1. Verify signature_key authenticity
-          2. Look up the order_id to find which child app owns it
-          3. Forward the payload to the child app's WebhookUrl (Db_Environment.WebhookUrl)
+      2. Reconcile the stored transaction by `order_id`
+      3. Forward the original Midtrans fields plus `gateway_fee_breakdown` to the child app's WebhookUrl (Db_Environment.WebhookUrl)
 ```
 
 The child app's `WebhookUrl` is stored in `Db_Environment` and registered when the environment is created/updated.
@@ -33,11 +33,11 @@ Set this in: **Midtrans Dashboard → Settings → Configuration → Payment Not
 
 For sandbox this gateway's notification URL would be something like:
 ```
-https://your-gateway.com/api/webhook/midtrans/sandbox
+https://your-gateway.com/api/midtrans/sandbox/payment
 ```
 For production:
 ```
-https://your-gateway.com/api/webhook/midtrans/production
+https://your-gateway.com/api/midtrans/payment
 ```
 
 ### Per-Transaction Override (Advanced)
@@ -72,6 +72,40 @@ Midtrans sends a JSON POST body. The core fields present on all payment methods:
 | `currency` | string | Always `"IDR"` |
 | `transaction_time` | string | `"YYYY-MM-DD HH:mm:ss"` (WIB, UTC+7) |
 
+## Forwarded Payload to Child Apps
+
+After verification and reconciliation, the gateway forwards all original Midtrans fields unchanged and appends `gateway_fee_breakdown`.
+
+```json
+{
+  "transaction_time": "2020-01-09 18:27:19",
+  "transaction_status": "capture",
+  "transaction_id": "57d5293c-e65f-4a29-95e4-5959c3fa335b",
+  "status_message": "midtrans payment notification",
+  "status_code": "200",
+  "signature_key": "16d6f84b2fb0468e2a9cf99a8ac4e5d803d42180347aaa70cb2a7abb13b5c6130458ca9c71956a962c0827637cd3bc7d40b21a8ae9fab12c7c3efe351b18d00a",
+  "payment_type": "credit_card",
+  "order_id": "a1b2c3d4_ORDER-123456",
+  "merchant_id": "G141532850",
+  "masked_card": "48111111-1114",
+  "gross_amount": "10000.00",
+  "fraud_status": "accept",
+  "currency": "IDR",
+  "bank": "bni",
+  "approval_code": "1578569243927",
+  "gateway_fee_breakdown": {
+    "final_gross_amount": 10000.00,
+    "original_amount": null,
+    "customer_payment_fee": null,
+    "fee_percentage": null
+  }
+}
+```
+
+- Midtrans only exposes payer-specific fee metadata after the payer selects a payment method inside Snap.
+- If `metadata.extra_info.gross_amount_info` is absent, `gateway_fee_breakdown.final_gross_amount` falls back to top-level `gross_amount` when available.
+- When that metadata is absent, `original_amount`, `customer_payment_fee`, and `fee_percentage` remain `null`.
+
 ### Sample Payload (Credit Card — Success)
 
 ```json
@@ -83,7 +117,7 @@ Midtrans sends a JSON POST body. The core fields present on all payment methods:
   "status_code": "200",
   "signature_key": "16d6f84b2fb0468e2a9cf99a8ac4e5d803d42180347aaa70cb2a7abb13b5c6130458ca9c71956a962c0827637cd3bc7d40b21a8ae9fab12c7c3efe351b18d00a",
   "payment_type": "credit_card",
-  "order_id": "ORDER-123456",
+  "order_id": "a1b2c3d4_ORDER-123456",
   "merchant_id": "G141532850",
   "masked_card": "48111111-1114",
   "gross_amount": "10000.00",
@@ -210,16 +244,13 @@ Searchable by `order_id`. Shows whether each notification was delivered successf
 ## Webhook Flow in This Gateway (Implementation Notes)
 
 ```
-POST /api/webhook/midtrans/{env}
+POST /api/midtrans/sandbox/payment or /api/midtrans/payment
   ↓
 1. Read order_id from payload
-2. Verify signature_key using ServerKey for {env}
+2. Verify signature_key using the environment's ServerKey
    → If invalid: return 400 (log the attempt)
-3. Look up Db_Environment.WebhookUrl by matching order_id to registered app
-   → order_id convention must encode or reference which Db_Environment created it
-4. Forward original payload to Db_Environment.WebhookUrl via HTTP POST
+3. Reconcile the stored transaction by Midtrans `order_id`
+4. Forward original payload plus `gateway_fee_breakdown` to Db_Environment.WebhookUrl via HTTP POST
    → Log result (success/failure, response code)
 5. Return 200 OK to Midtrans regardless of forwarding result
 ```
-
-> **Note:** The `order_id` used during Snap token creation must be structured to allow this gateway to route the webhook back to the correct child app environment. This needs to be defined during implementation (e.g. prefix with environment `ApiKey` hash, or store a mapping table).

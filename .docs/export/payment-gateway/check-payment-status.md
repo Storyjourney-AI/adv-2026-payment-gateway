@@ -40,9 +40,15 @@ GET /api/snap/status/{orderId}
     "gatewayStatus": "settlement",
     "midtransStatus": "settlement",
     "fraudStatus": "accept",
-    "grossAmount": "150000.00",
+    "grossAmount": "154500.00",
+    "feeBreakdown": {
+      "finalGrossAmount": 154500.00,
+      "originalAmount": 150000.00,
+      "customerPaymentFee": 4500.00,
+      "feePercentage": 3.00
+    },
     "midtransTransactionId": "abc123def456",
-    "paymentType": "bank_transfer",
+    "paymentType": "credit_card",
     "createdAt": "2026-03-31T08:00:00Z",
     "updatedAt": "2026-03-31T08:05:00Z"
   }
@@ -59,10 +65,20 @@ GET /api/snap/status/{orderId}
 | `midtransStatus` | `string` | Live status returned directly from Midtrans API at request time. |
 | `fraudStatus` | `string` | Midtrans fraud detection result: `accept`, `challenge`, or `deny`. |
 | `grossAmount` | `string` | Transaction amount as returned by Midtrans (e.g. `"150000.00"`). |
+| `feeBreakdown` | `object \| null` | Fee projection derived from the verified Midtrans status response. See fields below. |
 | `midtransTransactionId` | `string` | Midtrans internal transaction identifier. |
 | `paymentType` | `string` | Payment method used (e.g. `bank_transfer`, `credit_card`, `gopay`). |
 | `createdAt` | `string` | ISO 8601 UTC timestamp when the transaction was created in the gateway. |
 | `updatedAt` | `string` | ISO 8601 UTC timestamp of the last status update. |
+
+### `feeBreakdown` Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `finalGrossAmount` | `number \| null` | Final amount charged to the payer. Falls back to top-level `grossAmount` when available. |
+| `originalAmount` | `number \| null` | Original amount before payer fees. Present when Midtrans returns `metadata.extra_info.gross_amount_info`. |
+| `customerPaymentFee` | `number \| null` | Fee charged to the payer. Present when Midtrans returns `metadata.extra_info.gross_amount_info`. |
+| `feePercentage` | `number \| null` | Percentage used to calculate the payer fee. Present when Midtrans returns `metadata.extra_info.gross_amount_info`. |
 
 ---
 
@@ -160,10 +176,18 @@ interface PaymentStatusResponse {
   midtransStatus: string | null;
   fraudStatus: string | null;
   grossAmount: string;
+  feeBreakdown: FeeBreakdown | null;
   midtransTransactionId: string | null;
   paymentType: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+interface FeeBreakdown {
+  finalGrossAmount: number | null;
+  originalAmount: number | null;
+  customerPaymentFee: number | null;
+  feePercentage: number | null;
 }
 
 interface GatewayResponse<T> {
@@ -209,5 +233,7 @@ if (status.midtransStatus === "settlement") {
 ## Notes
 
 - `midtransStatus` reflects the live status fetched from Midtrans at the time of the request.
-- `gatewayStatus` is synced to match `midtransStatus` before the response is built. Both fields will always be equal in a successful response from this endpoint.
+- `gatewayStatus` is synced to match `midtransStatus` before the response is built, so both fields should match in a successful response.
 - The gateway persists the updated status to the database if it changed.
+- Midtrans only exposes payer-specific fee metadata after the payer selects a payment method inside Snap.
+- If `metadata.extra_info.gross_amount_info` is absent, the gateway still populates `feeBreakdown.finalGrossAmount` from top-level `grossAmount` when available, while `originalAmount`, `customerPaymentFee`, and `feePercentage` remain `null`.

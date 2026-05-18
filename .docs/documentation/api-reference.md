@@ -252,20 +252,30 @@ X-Api-Key: your_api_key_here
 ```json
 {
   "success": true,
-  "message": "Transaction status retrieved",
+  "message": "Payment status retrieved successfully.",
   "data": {
     "callerOrderId": "order-001",
     "midtransOrderId": "a1b2c3d4_order-001",
-    "transactionStatus": "settlement",
+    "gatewayStatus": "settlement",
+    "midtransStatus": "settlement",
     "fraudStatus": "accept",
-    "grossAmount": "50000.00",
-    "transactionId": "midtrans-txn-id",
-    "paymentType": "bank_transfer",
-    "transactionTime": "2026-01-15 10:30:00"
+    "grossAmount": "51500.00",
+    "feeBreakdown": {
+      "finalGrossAmount": 51500.00,
+      "originalAmount": 50000.00,
+      "customerPaymentFee": 1500.00,
+      "feePercentage": 3.00
+    },
+    "midtransTransactionId": "midtrans-txn-id",
+    "paymentType": "credit_card",
+    "createdAt": "2026-01-15T10:25:00Z",
+    "updatedAt": "2026-01-15T10:30:00Z"
   },
   "errors": null
 }
 ```
+
+`feeBreakdown` is derived from the verified Midtrans status response. Midtrans only exposes payer-specific fee metadata after the payer selects a payment method inside Snap. If `metadata.extra_info.gross_amount_info` is absent, the gateway still falls back to top-level `grossAmount` for `feeBreakdown.finalGrossAmount` when available, while the other fee fields remain `null`.
 
 #### Error Responses
 
@@ -309,13 +319,24 @@ X-Api-Key: your_api_key_here
 ```json
 {
   "success": true,
-  "message": "Transaction cancelled successfully",
+  "message": "Payment cancelled successfully.",
   "data": {
     "callerOrderId": "order-001",
     "midtransOrderId": "a1b2c3d4_order-001",
-    "transactionStatus": "cancel",
+    "gatewayStatus": "cancel",
+    "midtransStatus": "cancel",
+    "fraudStatus": null,
     "grossAmount": "50000.00",
-    "transactionId": "midtrans-txn-id"
+    "feeBreakdown": {
+      "finalGrossAmount": 50000.00,
+      "originalAmount": null,
+      "customerPaymentFee": null,
+      "feePercentage": null
+    },
+    "midtransTransactionId": "midtrans-txn-id",
+    "paymentType": null,
+    "createdAt": "2026-01-15T10:25:00Z",
+    "updatedAt": "2026-01-15T10:30:00Z"
   },
   "errors": null
 }
@@ -327,7 +348,7 @@ X-Api-Key: your_api_key_here
 | ---- | ---------------------------------------- |
 | 401  | Missing or invalid API key               |
 | 404  | Order ID not found                       |
-| 409  | Transaction is not in a cancellable state |
+| 422  | Transaction is not in a cancellable state |
 | 502  | Midtrans API error                       |
 
 #### cURL Example
@@ -341,25 +362,35 @@ curl -X POST https://your-gateway-url/api/snap/cancel/order-001 \
 
 ## 4. Webhook Handling
 
-When a payment status changes, Midtrans sends a notification to the gateway. The gateway stores the updated status and forwards the raw Midtrans notification payload to the `WebhookUrl` configured on your environment.
+When a payment status changes, Midtrans sends a notification to the gateway. The gateway stores the updated status, preserves the original Midtrans payload fields, and forwards them to the `WebhookUrl` configured on your environment with an added `gateway_fee_breakdown` field.
 
 ### Notification Payload
 
-The forwarded payload contains the raw Midtrans notification. Key fields include:
+The forwarded payload preserves the original Midtrans notification fields and appends gateway-computed fee data. Key fields include:
 
 ```json
 {
+  "transaction_time": "2026-01-15 10:30:00",
   "order_id": "a1b2c3d4_order-001",
   "transaction_status": "settlement",
   "fraud_status": "accept",
-  "gross_amount": "50000.00",
-  "transaction_id": "midtrans-txn-id"
+  "gross_amount": "51500.00",
+  "transaction_id": "midtrans-txn-id",
+  "payment_type": "credit_card",
+  "gateway_fee_breakdown": {
+    "final_gross_amount": 51500.00,
+    "original_amount": 50000.00,
+    "customer_payment_fee": 1500.00,
+    "fee_percentage": 3.00
+  }
 }
 ```
 
 ### Important Notes
 
 - The `order_id` in the forwarded payload is the Midtrans-prefixed ID (format: `{envId[0..8]}_{callerOrderId}`), not your raw caller order ID.
+- All original Midtrans fields are preserved. The gateway only appends `gateway_fee_breakdown`.
+- Midtrans only exposes payer-specific fee metadata after the payer selects a payment method inside Snap. If `metadata.extra_info.gross_amount_info` is absent, `gateway_fee_breakdown.final_gross_amount` falls back to top-level `gross_amount` when available and the other fee fields remain `null`.
 - Your webhook endpoint **must return a 2xx status code** to acknowledge receipt of the notification.
 - **SSRF Guard:** The `WebhookUrl` must be a valid HTTPS URL pointing to a non-loopback, non-private IP address.
 

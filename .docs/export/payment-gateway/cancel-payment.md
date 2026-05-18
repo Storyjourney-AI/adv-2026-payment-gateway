@@ -47,6 +47,12 @@ None. This endpoint requires no request body.
     "midtransStatus": "cancel",
     "fraudStatus": null,
     "grossAmount": "150000.00",
+    "feeBreakdown": {
+      "finalGrossAmount": 150000.00,
+      "originalAmount": null,
+      "customerPaymentFee": null,
+      "feePercentage": null
+    },
     "midtransTransactionId": "abc123def456",
     "paymentType": null,
     "createdAt": "2026-03-31T08:00:00Z",
@@ -56,6 +62,8 @@ None. This endpoint requires no request body.
 ```
 
 The response shape is the same as [Check Payment Status](./check-payment-status.md#response-fields) with `gatewayStatus` and `midtransStatus` both set to `"cancel"`.
+
+`feeBreakdown` follows the same rules as the status endpoint: `finalGrossAmount` falls back to top-level `grossAmount` when Midtrans does not return `metadata.extra_info.gross_amount_info`, while the other fee fields remain `null` until Midtrans exposes them.
 
 ---
 
@@ -166,10 +174,18 @@ interface PaymentStatusResponse {
   midtransStatus: string | null;
   fraudStatus: string | null;
   grossAmount: string;
+  feeBreakdown: FeeBreakdown | null;
   midtransTransactionId: string | null;
   paymentType: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+interface FeeBreakdown {
+  finalGrossAmount: number | null;
+  originalAmount: number | null;
+  customerPaymentFee: number | null;
+  feePercentage: number | null;
 }
 
 interface GatewayResponse<T> {
@@ -208,6 +224,7 @@ async function cancelPayment(
 try {
   const result = await cancelPayment("your-api-key", "ORDER-2026-0001");
   console.log("Cancelled. Status:", result.midtransStatus);
+  console.log("Fee info:", result.feeBreakdown?.customerPaymentFee ?? "not available");
 } catch (err) {
   console.error("Cancel failed:", err.message);
 }

@@ -199,7 +199,11 @@ namespace PaymentGateway.Server.Midtrans.Controllers
                 {
                     try
                     {
-                        var forwardStatus = await SendForwardWithRetryAsync(webhookUrl, rawBody, HttpContext.RequestAborted);
+                        var forwardBody = MidtransWebhookForwardPayloadBuilder.Build(
+                            rawBody,
+                            reconciliationResult.VerifiedStatus.FeeBreakdown);
+
+                        var forwardStatus = await SendForwardWithRetryAsync(webhookUrl, forwardBody, HttpContext.RequestAborted);
                         if (forwardStatus != null)
                         {
                             m_logger.LogInformation(

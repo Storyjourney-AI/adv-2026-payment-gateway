@@ -6,6 +6,7 @@ using PaymentGateway.Server.Midtrans.Models;
 using PaymentGateway.Server.Midtrans.Models.Dbs;
 using PaymentGateway.Server.Midtrans.Models.Dtos;
 using System.Net;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 
@@ -41,6 +42,7 @@ namespace PaymentGateway.Server.Midtrans.Services
         public string TransactionStatus { get; init; } = string.Empty;
         public string? FraudStatus { get; init; }
         public string GrossAmount { get; init; } = string.Empty;
+        public Dto_SnapFeeBreakdown? FeeBreakdown { get; init; }
         public string? TransactionId { get; init; }
         public string? PaymentType { get; init; }
         public string? StatusCode { get; init; }
@@ -201,7 +203,11 @@ namespace PaymentGateway.Server.Midtrans.Services
             }
 
             using var document = JsonDocument.Parse(responseBody);
-            var root = document.RootElement;
+            return ParseVerifiedStatus(document.RootElement);
+        }
+
+        internal static MidtransVerifiedStatus ParseVerifiedStatus(JsonElement root)
+        {
             var transactionStatus = GetRequiredString(root, "transaction_status");
 
             return new MidtransVerifiedStatus
@@ -209,6 +215,7 @@ namespace PaymentGateway.Server.Midtrans.Services
                 TransactionStatus = transactionStatus,
                 FraudStatus = GetOptionalString(root, "fraud_status"),
                 GrossAmount = GetOptionalString(root, "gross_amount") ?? string.Empty,
+                FeeBreakdown = BuildFeeBreakdown(root),
                 TransactionId = GetOptionalString(root, "transaction_id"),
                 PaymentType = GetOptionalString(root, "payment_type"),
                 StatusCode = GetOptionalString(root, "status_code"),
@@ -216,7 +223,7 @@ namespace PaymentGateway.Server.Midtrans.Services
             };
         }
 
-        private static Dto_SnapStatusResponse BuildStatusResponse(
+        internal static Dto_SnapStatusResponse BuildStatusResponse(
             Db_SnapTransaction transaction,
             MidtransVerifiedStatus verifiedStatus)
         {
@@ -228,10 +235,52 @@ namespace PaymentGateway.Server.Midtrans.Services
                 MidtransStatus = verifiedStatus.TransactionStatus,
                 FraudStatus = verifiedStatus.FraudStatus,
                 GrossAmount = verifiedStatus.GrossAmount,
+                FeeBreakdown = verifiedStatus.FeeBreakdown,
                 MidtransTransactionId = verifiedStatus.TransactionId,
                 PaymentType = verifiedStatus.PaymentType,
                 CreatedAt = transaction.CreatedAt,
                 UpdatedAt = transaction.UpdatedAt
+            };
+        }
+
+        internal static Dto_SnapStatusResponse BuildStatusResponse(
+            Db_SnapTransaction transaction,
+            JsonElement root)
+        {
+            return BuildStatusResponse(transaction, ParseVerifiedStatus(root));
+        }
+
+        private static Dto_SnapFeeBreakdown? BuildFeeBreakdown(JsonElement root)
+        {
+            var finalGrossAmount = GetOptionalDecimal(root, "gross_amount");
+
+            var originalAmount = default(decimal?);
+            var customerPaymentFee = default(decimal?);
+            var feePercentage = default(decimal?);
+
+            if (TryGetNestedObject(root, "metadata", out var metadata)
+                && TryGetNestedObject(metadata, "extra_info", out var extraInfo)
+                && TryGetNestedObject(extraInfo, "gross_amount_info", out var grossAmountInfo))
+            {
+                originalAmount = GetOptionalDecimal(grossAmountInfo, "original_amount");
+                customerPaymentFee = GetOptionalDecimal(grossAmountInfo, "customer_payment_fee");
+                feePercentage = GetOptionalDecimal(grossAmountInfo, "fee_percentage");
+            }
+
+            if (finalGrossAmount == null
+                && originalAmount == null
+                && customerPaymentFee == null
+                && feePercentage == null)
+            {
+                return null;
+            }
+
+            return new Dto_SnapFeeBreakdown
+            {
+                FinalGrossAmount = finalGrossAmount,
+                OriginalAmount = originalAmount,
+                CustomerPaymentFee = customerPaymentFee,
+                FeePercentage = feePercentage
             };
         }
 
@@ -249,6 +298,11 @@ namespace PaymentGateway.Server.Midtrans.Services
 
         private static string? GetOptionalString(JsonElement root, string propertyName)
         {
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
             if (!root.TryGetProperty(propertyName, out var element))
             {
                 return null;
@@ -260,6 +314,38 @@ namespace PaymentGateway.Server.Midtrans.Services
                 JsonValueKind.Number => element.ToString(),
                 _ => null
             };
+        }
+
+        private static decimal? GetOptionalDecimal(JsonElement root, string propertyName)
+        {
+            var value = GetOptionalString(root, propertyName);
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return null;
+            }
+
+            return decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out var parsed)
+                ? parsed
+                : null;
+        }
+
+        private static bool TryGetNestedObject(JsonElement root, string propertyName, out JsonElement nestedObject)
+        {
+            nestedObject = default;
+
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            if (!root.TryGetProperty(propertyName, out var propertyValue)
+                || propertyValue.ValueKind != JsonValueKind.Object)
+            {
+                return false;
+            }
+
+            nestedObject = propertyValue;
+            return true;
         }
 
         private static string? TryGetStringProperty(string rawJson, string propertyName)

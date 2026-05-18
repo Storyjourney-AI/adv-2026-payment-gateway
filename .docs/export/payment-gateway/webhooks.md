@@ -9,12 +9,12 @@ The gateway forwards verified Midtrans payment notifications to your application
 ```
 Midtrans → POST /api/midtrans/payment (gateway)
                │
-               ├─ Verify HMAC-SHA512 signature
+               ├─ Verify SHA-512 signature
                ├─ Anti-replay check (transaction_time window)
                ├─ Idempotency guard (deduplication)
                ├─ Update transaction status in DB
                │
-               └─ POST your WebhookUrl ← raw Midtrans payload forwarded here
+               └─ POST your WebhookUrl ← original Midtrans fields + gateway_fee_breakdown
 ```
 
 You do **not** receive webhooks directly from Midtrans. The gateway validates every notification before forwarding it to your server.
@@ -36,7 +36,7 @@ Set the `WebhookUrl` field on your environment via the gateway dashboard or API.
 
 ## Webhook Payload
 
-The payload forwarded to your `WebhookUrl` is the **raw Midtrans notification body**, unchanged. Below is the full structure you can expect:
+The payload forwarded to your `WebhookUrl` preserves the original Midtrans notification fields and appends a `gateway_fee_breakdown` field derived from the verified status response. Below is the structure you can expect:
 
 ```json
 {
@@ -51,7 +51,13 @@ The payload forwarded to your `WebhookUrl` is the **raw Midtrans notification bo
   "merchant_id": "G123456789",
   "gross_amount": "150000.00",
   "fraud_status": "accept",
-  "currency": "IDR"
+  "currency": "IDR",
+  "gateway_fee_breakdown": {
+    "final_gross_amount": 150000.00,
+    "original_amount": null,
+    "customer_payment_fee": null,
+    "fee_percentage": null
+  }
 }
 ```
 
@@ -69,7 +75,14 @@ The payload forwarded to your `WebhookUrl` is the **raw Midtrans notification bo
 | `gross_amount` | `string` | Total transaction amount in IDR. |
 | `fraud_status` | `string` | `accept`, `challenge`, or `deny`. Only present for credit card payments. |
 | `status_code` | `string` | Midtrans HTTP-style status code (e.g. `"200"` for success). |
-| `signature_key` | `string` | HMAC-SHA512 signature (verified by gateway before forwarding). |
+| `signature_key` | `string` | SHA-512 signature key (verified by gateway before forwarding). |
+| `gateway_fee_breakdown` | `object \| null` | Gateway-appended fee projection. Original Midtrans fields are preserved unchanged. |
+
+`gateway_fee_breakdown` uses snake_case and follows these rules:
+
+- Midtrans only exposes payer-specific fees after the payer selects a payment method inside Snap.
+- If Midtrans omits `metadata.extra_info.gross_amount_info`, the gateway falls back to top-level `gross_amount` for `final_gross_amount` when available.
+- When that metadata is absent, `original_amount`, `customer_payment_fee`, and `fee_percentage` remain `null`.
 
 ---
 
@@ -146,6 +159,14 @@ interface MidtransWebhookPayload {
   signature_key: string;
   merchant_id: string;
   currency: string;
+  gateway_fee_breakdown: GatewayFeeBreakdown | null;
+}
+
+interface GatewayFeeBreakdown {
+  final_gross_amount: number | null;
+  original_amount: number | null;
+  customer_payment_fee: number | null;
+  fee_percentage: number | null;
 }
 
 function extractCallerOrderId(midtransOrderId: string): string {

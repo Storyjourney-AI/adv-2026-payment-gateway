@@ -287,51 +287,26 @@ namespace PaymentGateway.Server.Midtrans.Controllers
                     message: $"Transaction with orderId '{orderId}' not found."));
             }
 
-            // 3. Resolve Midtrans API base URL and server key
-            var envOptions = environment.IsSandbox ? m_midtransOptions.Sandbox : m_midtransOptions.Production;
-            var baseUrl = environment.IsSandbox ? MidtransSandboxApiUrl : MidtransProductionApiUrl;
-            var statusUrl = $"{baseUrl}/{transaction.MidtransOrderId}/status";
-            var authValue = Convert.ToBase64String(Encoding.UTF8.GetBytes(envOptions.ServerKey + ":"));
-
-            // 4. Call Midtrans status API
             try
             {
-                var client = m_httpClientFactory.CreateClient("midtrans");
+                var reconciliationResult = await m_midtransTransactionReconciliationService
+                    .ReconcileByMidtransOrderIdAsync(transaction.MidtransOrderId, HttpContext.RequestAborted);
 
-                using var httpRequest = new HttpRequestMessage(HttpMethod.Get, statusUrl);
-                httpRequest.Headers.Add("Authorization", $"Basic {authValue}");
-
-                var httpResponse = await client.SendAsync(httpRequest);
-                var responseBody = await httpResponse.Content.ReadAsStringAsync();
-
-                if (!httpResponse.IsSuccessStatusCode)
+                if (reconciliationResult == null)
                 {
-                    m_logger.LogWarning("Midtrans status API error for order {OrderId}. Status: {Status}, Body: {Body}",
-                        orderId, httpResponse.StatusCode, responseBody);
-
-                    string? midtransMessage = null;
-                    try
-                    {
-                        using var errDoc = JsonDocument.Parse(responseBody);
-                        errDoc.RootElement.TryGetProperty("status_message", out var msgEl);
-                        midtransMessage = msgEl.ValueKind == JsonValueKind.String ? msgEl.GetString() : null;
-                    }
-                    catch { /* ignore parse failure */ }
-
-                    return StatusCode(502, DataWrapper<object>.Fail(
-                        System.Net.HttpStatusCode.BadGateway,
-                        message: midtransMessage ?? "Midtrans status API returned an error."));
+                    return NotFound(DataWrapper<object>.NotFound(
+                        message: $"Transaction with orderId '{orderId}' not found."));
                 }
-
-                using var doc = JsonDocument.Parse(responseBody);
-                if (ApplyMidtransStatusToTransaction(doc.RootElement, transaction))
-                {
-                    await m_dbContext.SaveChangesAsync();
-                }
-                var statusResponse = BuildStatusResponseFromMidtrans(doc, transaction);
 
                 return Ok(DataWrapper<Dto_SnapStatusResponse>.Succeed(
-                    statusResponse, message: "Payment status retrieved successfully."));
+                    reconciliationResult.StatusResponse, message: "Payment status retrieved successfully."));
+            }
+            catch (MidtransStatusVerificationException ex)
+            {
+                m_logger.LogWarning(ex, "Midtrans status API error for order {OrderId}", orderId);
+                return StatusCode(502, DataWrapper<object>.Fail(
+                    System.Net.HttpStatusCode.BadGateway,
+                    message: ex.Message));
             }
             catch (Exception ex)
             {
@@ -433,10 +408,25 @@ namespace PaymentGateway.Server.Midtrans.Controllers
                 transaction.UpdatedAt = DateTime.UtcNow;
                 await m_dbContext.SaveChangesAsync();
 
-                var statusResponse = BuildStatusResponseFromMidtrans(doc, transaction);
+                var reconciliationResult = await m_midtransTransactionReconciliationService
+                    .ReconcileByMidtransOrderIdAsync(transaction.MidtransOrderId, HttpContext.RequestAborted);
+
+                if (reconciliationResult == null)
+                {
+                    return StatusCode(502, DataWrapper<object>.Fail(
+                        System.Net.HttpStatusCode.BadGateway,
+                        message: "Failed to verify cancelled payment status with Midtrans."));
+                }
 
                 return Ok(DataWrapper<Dto_SnapStatusResponse>.Succeed(
-                    statusResponse, message: "Payment cancelled successfully."));
+                    reconciliationResult.StatusResponse, message: "Payment cancelled successfully."));
+            }
+            catch (MidtransStatusVerificationException ex)
+            {
+                m_logger.LogWarning(ex, "Midtrans status verification failed after cancel for order {OrderId}", orderId);
+                return StatusCode(502, DataWrapper<object>.Fail(
+                    System.Net.HttpStatusCode.BadGateway,
+                    message: ex.Message));
             }
             catch (Exception ex)
             {
@@ -759,37 +749,6 @@ namespace PaymentGateway.Server.Midtrans.Controllers
                 return StatusCode(502, DataWrapper<object>.Fail_InternalError(
                     message: "Failed to communicate with Midtrans. Please try again."));
             }
-        }
-
-        /// <summary>
-        /// Builds a <see cref="Dto_SnapStatusResponse"/> by merging the live Midtrans response
-        /// with the gateway's stored DB transaction record.
-        /// </summary>
-        private static Dto_SnapStatusResponse BuildStatusResponseFromMidtrans(
-            JsonDocument midtransDoc,
-            Db_SnapTransaction tx)
-        {
-            var root = midtransDoc.RootElement;
-
-            root.TryGetProperty("transaction_status", out var txStatusEl);
-            root.TryGetProperty("fraud_status", out var fraudEl);
-            root.TryGetProperty("gross_amount", out var grossEl);
-            root.TryGetProperty("transaction_id", out var txIdEl);
-            root.TryGetProperty("payment_type", out var payTypeEl);
-
-            return new Dto_SnapStatusResponse
-            {
-                CallerOrderId = tx.CallerOrderId,
-                MidtransOrderId = tx.MidtransOrderId,
-                GatewayStatus = tx.TransactionStatus,
-                MidtransStatus = txStatusEl.ValueKind == JsonValueKind.String ? txStatusEl.GetString() : null,
-                FraudStatus = fraudEl.ValueKind == JsonValueKind.String ? fraudEl.GetString() : null,
-                GrossAmount = grossEl.ValueKind == JsonValueKind.String ? grossEl.GetString() ?? string.Empty : string.Empty,
-                MidtransTransactionId = txIdEl.ValueKind == JsonValueKind.String ? txIdEl.GetString() : null,
-                PaymentType = payTypeEl.ValueKind == JsonValueKind.String ? payTypeEl.GetString() : null,
-                CreatedAt = tx.CreatedAt,
-                UpdatedAt = tx.UpdatedAt
-            };
         }
 
         /// <summary>

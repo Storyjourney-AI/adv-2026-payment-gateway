@@ -209,10 +209,10 @@ When a transaction status changes (paid, failed, expired), Midtrans sends a POST
 
 The gateway must:
 1. Receive the webhook
-2. Verify it (Midtrans provides a signature key for HMAC-SHA512 verification)
-3. Forward it to the relevant child app's registered webhook endpoint
+2. Verify it (Midtrans provides a SHA-512 `signature_key`)
+3. Forward the original Midtrans fields to the relevant child app's registered webhook endpoint and append `gateway_fee_breakdown`
 
-This is covered in a subsequent task — **not in scope for task-001**.
+`gateway_fee_breakdown` is derived from the verified Midtrans status response. Midtrans only exposes payer-specific fees after the payer selects a payment method inside Snap. If `metadata.extra_info.gross_amount_info` is absent, the gateway falls back to top-level `gross_amount` for the final amount when available and leaves the detailed fee fields null.
 
 ---
 

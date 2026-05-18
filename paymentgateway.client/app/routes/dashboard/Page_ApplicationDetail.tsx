@@ -482,7 +482,9 @@ console.log(result.data.redirectUrl);`;
   }
 });
 const result = await response.json();
-console.log(result.data.transactionStatus);`;
+console.log(result.data.midtransStatus);
+// feeBreakdown is filled when Midtrans exposes fee metadata after the payer picks a method in Snap.
+console.log(result.data.feeBreakdown?.customerPaymentFee ?? "Fee info not available yet");`;
 
               return (
                 <TabsContent key={env.id} value={env.id} className="space-y-6">
