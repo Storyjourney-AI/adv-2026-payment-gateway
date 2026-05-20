@@ -20,6 +20,192 @@ namespace PaymentGateway.Server.Tests.Midtrans
     public class WebhookControllerTests
     {
         [Fact]
+        public async Task SandboxWebhook_AcknowledgesOldValidSettlementNotification()
+        {
+            const string orderId = "order-old";
+            const string statusCode = "200";
+            const string topLevelGrossAmount = "10000.00";
+            const string serverKey = "sandbox-server-key";
+            var signatureKey = CreateSignature(orderId, statusCode, topLevelGrossAmount, serverKey);
+            var transactionTime = DateTimeOffset.UtcNow
+                .ToOffset(TimeSpan.FromHours(7))
+                .AddMinutes(-30)
+                .ToString("yyyy-MM-dd HH:mm:ss");
+
+            var rawBody = $$"""
+            {
+              "order_id": "{{orderId}}",
+              "status_code": "{{statusCode}}",
+              "gross_amount": "{{topLevelGrossAmount}}",
+              "signature_key": "{{signatureKey}}",
+              "transaction_status": "settlement",
+              "transaction_id": "txn-old",
+              "transaction_time": "{{transactionTime}}"
+            }
+            """;
+
+            var replayGuard = new ConfigurableWebhookReplayGuard(_ => true);
+            var reconciliationService = new StubReconciliationService(CreateReconciliationResult("https://8.8.8.8/webhook"));
+            var controller = CreateController(
+                new StubHttpClientFactory(new HttpClient(new StubHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)))),
+                reconciliationService,
+                replayGuard: replayGuard);
+
+            controller.ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext()
+            };
+
+            controller.HttpContext.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(rawBody));
+            controller.HttpContext.Request.ContentType = "application/json";
+
+            var result = await controller.SandboxWebhook();
+
+            Assert.IsType<OkResult>(result);
+            Assert.Equal(1, reconciliationService.CallCount);
+            Assert.Equal(1, replayGuard.CallCount);
+        }
+
+        [Fact]
+        public async Task SandboxWebhook_ReturnsBadRequest_ForInvalidSignature()
+        {
+            const string orderId = "order-invalid-signature";
+            const string statusCode = "200";
+            const string topLevelGrossAmount = "10000.00";
+            var transactionTime = DateTimeOffset.UtcNow
+                .ToOffset(TimeSpan.FromHours(7))
+                .AddMinutes(-1)
+                .ToString("yyyy-MM-dd HH:mm:ss");
+
+            var rawBody = $$"""
+            {
+              "order_id": "{{orderId}}",
+              "status_code": "{{statusCode}}",
+              "gross_amount": "{{topLevelGrossAmount}}",
+              "signature_key": "bad-signature",
+              "transaction_status": "settlement",
+              "transaction_id": "txn-invalid-signature",
+              "transaction_time": "{{transactionTime}}"
+            }
+            """;
+
+            var replayGuard = new ConfigurableWebhookReplayGuard(_ => true);
+            var reconciliationService = new StubReconciliationService(CreateReconciliationResult("https://8.8.8.8/webhook"));
+            var controller = CreateController(
+                new StubHttpClientFactory(new HttpClient(new StubHttpMessageHandler(_ => throw new InvalidOperationException("Forwarding should not run for invalid signatures.")))),
+                reconciliationService,
+                replayGuard: replayGuard);
+
+            controller.ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext()
+            };
+
+            controller.HttpContext.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(rawBody));
+            controller.HttpContext.Request.ContentType = "application/json";
+
+            var result = await controller.SandboxWebhook();
+
+            Assert.IsType<BadRequestResult>(result);
+            Assert.Equal(0, reconciliationService.CallCount);
+            Assert.Equal(0, replayGuard.CallCount);
+        }
+
+        [Fact]
+        public async Task SandboxWebhook_ReturnsBadRequest_ForFutureTransactionTime()
+        {
+            const string orderId = "order-future";
+            const string statusCode = "200";
+            const string topLevelGrossAmount = "10000.00";
+            const string serverKey = "sandbox-server-key";
+            var signatureKey = CreateSignature(orderId, statusCode, topLevelGrossAmount, serverKey);
+            var transactionTime = DateTimeOffset.UtcNow
+                .ToOffset(TimeSpan.FromHours(7))
+                .AddMinutes(30)
+                .ToString("yyyy-MM-dd HH:mm:ss");
+
+            var rawBody = $$"""
+            {
+              "order_id": "{{orderId}}",
+              "status_code": "{{statusCode}}",
+              "gross_amount": "{{topLevelGrossAmount}}",
+              "signature_key": "{{signatureKey}}",
+              "transaction_status": "settlement",
+              "transaction_id": "txn-future",
+              "transaction_time": "{{transactionTime}}"
+            }
+            """;
+
+            var replayGuard = new ConfigurableWebhookReplayGuard(_ => true);
+            var reconciliationService = new StubReconciliationService(CreateReconciliationResult("https://8.8.8.8/webhook"));
+            var controller = CreateController(
+                new StubHttpClientFactory(new HttpClient(new StubHttpMessageHandler(_ => throw new InvalidOperationException("Forwarding should not run for future-skewed notifications.")))),
+                reconciliationService,
+                replayGuard: replayGuard);
+
+            controller.ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext()
+            };
+
+            controller.HttpContext.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(rawBody));
+            controller.HttpContext.Request.ContentType = "application/json";
+
+            var result = await controller.SandboxWebhook();
+
+            Assert.IsType<BadRequestResult>(result);
+            Assert.Equal(0, reconciliationService.CallCount);
+            Assert.Equal(0, replayGuard.CallCount);
+        }
+
+        [Fact]
+        public async Task SandboxWebhook_AcknowledgesDuplicateNotification_WithoutReprocessing()
+        {
+            const string orderId = "order-duplicate";
+            const string statusCode = "200";
+            const string topLevelGrossAmount = "10000.00";
+            const string serverKey = "sandbox-server-key";
+            var signatureKey = CreateSignature(orderId, statusCode, topLevelGrossAmount, serverKey);
+            var transactionTime = DateTimeOffset.UtcNow
+                .ToOffset(TimeSpan.FromHours(7))
+                .AddMinutes(-1)
+                .ToString("yyyy-MM-dd HH:mm:ss");
+
+            var rawBody = $$"""
+            {
+              "order_id": "{{orderId}}",
+              "status_code": "{{statusCode}}",
+              "gross_amount": "{{topLevelGrossAmount}}",
+              "signature_key": "{{signatureKey}}",
+              "transaction_status": "settlement",
+              "transaction_id": "txn-duplicate",
+              "transaction_time": "{{transactionTime}}"
+            }
+            """;
+
+            var replayGuard = new ConfigurableWebhookReplayGuard(_ => false);
+            var reconciliationService = new StubReconciliationService(CreateReconciliationResult("https://8.8.8.8/webhook"));
+            var controller = CreateController(
+                new StubHttpClientFactory(new HttpClient(new StubHttpMessageHandler(_ => throw new InvalidOperationException("Forwarding should not run for duplicate notifications.")))),
+                reconciliationService,
+                replayGuard: replayGuard);
+
+            controller.ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext()
+            };
+
+            controller.HttpContext.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(rawBody));
+            controller.HttpContext.Request.ContentType = "application/json";
+
+            var result = await controller.SandboxWebhook();
+
+            Assert.IsType<OkResult>(result);
+            Assert.Equal(0, reconciliationService.CallCount);
+            Assert.Equal(1, replayGuard.CallCount);
+        }
+
+        [Fact]
         public async Task ProductionWebhook_ForwardsEnrichedPayload_WhileSignatureVerificationUsesTopLevelGrossAmount()
         {
             const string orderId = "order-123";
@@ -150,7 +336,9 @@ namespace PaymentGateway.Server.Tests.Midtrans
 
         private static WebhookController CreateController(
             IHttpClientFactory httpClientFactory,
-            IMidtransTransactionReconciliationService reconciliationService)
+            IMidtransTransactionReconciliationService reconciliationService,
+            WebhookHardeningOptions? hardeningOptions = null,
+            IWebhookReplayGuard? replayGuard = null)
         {
             return new WebhookController(
                 Options.Create(new MidtransOptions
@@ -166,7 +354,7 @@ namespace PaymentGateway.Server.Tests.Midtrans
                         ServerKey = "sandbox-server-key"
                     }
                 }),
-                Options.Create(new WebhookHardeningOptions
+                Options.Create(hardeningOptions ?? new WebhookHardeningOptions
                 {
                     ForwardRetryCount = 0,
                     ForwardRetryDelayMs = 50,
@@ -175,7 +363,7 @@ namespace PaymentGateway.Server.Tests.Midtrans
                     DeduplicationWindowMinutes = 60
                 }),
                 httpClientFactory,
-                new AllowAllWebhookReplayGuard(),
+                replayGuard ?? new ConfigurableWebhookReplayGuard(_ => true),
                 new StubSecurityMetricsService(),
                 reconciliationService,
                 NullLogger<WebhookController>.Instance);
@@ -237,17 +425,27 @@ namespace PaymentGateway.Server.Tests.Midtrans
         private sealed class StubReconciliationService(MidtransTransactionReconciliationResult reconciliationResult)
             : IMidtransTransactionReconciliationService
         {
+            public int CallCount { get; private set; }
+
             public Task<MidtransTransactionReconciliationResult?> ReconcileByMidtransOrderIdAsync(
                 string midtransOrderId,
                 CancellationToken cancellationToken = default)
             {
+                CallCount++;
                 return Task.FromResult<MidtransTransactionReconciliationResult?>(reconciliationResult);
             }
         }
 
-        private sealed class AllowAllWebhookReplayGuard : IWebhookReplayGuard
+        private sealed class ConfigurableWebhookReplayGuard(Func<string, bool> tryAcquire)
+            : IWebhookReplayGuard
         {
-            public bool TryAcquire(string dedupeKey, TimeSpan ttl) => true;
+            public int CallCount { get; private set; }
+
+            public bool TryAcquire(string dedupeKey, TimeSpan ttl)
+            {
+                CallCount++;
+                return tryAcquire(dedupeKey);
+            }
         }
 
         private sealed class StubSecurityMetricsService : ISecurityMetricsService

@@ -21,6 +21,8 @@ namespace PaymentGateway.Server.Midtrans.Controllers
     [AllowAnonymous]
     public class WebhookController : ControllerBase
     {
+        private const string ReplayReasonTransactionTimeTooOld = "transaction_time too old";
+
         private readonly MidtransOptions m_midtransOptions;
         private readonly WebhookHardeningOptions m_webhookHardeningOptions;
         private readonly IHttpClientFactory m_httpClientFactory;
@@ -50,7 +52,7 @@ namespace PaymentGateway.Server.Midtrans.Controllers
         /// <summary>
         /// Receive Midtrans payment notification for Production transactions.
         /// POST /api/midtrans/payment
-        /// Always returns 200 OK to prevent Midtrans retries.
+        /// Valid notifications are acknowledged with 200 OK; malformed or invalid payloads can return 400 Bad Request.
         /// </summary>
         [HttpPost("payment")]
         [EnableRateLimiting(RateLimitPolicyNames.WebhookTolerant)]
@@ -62,7 +64,7 @@ namespace PaymentGateway.Server.Midtrans.Controllers
         /// <summary>
         /// Receive Midtrans payment notification for Sandbox transactions.
         /// POST /api/midtrans/sandbox/payment
-        /// Always returns 200 OK to prevent Midtrans retries.
+        /// Valid notifications are acknowledged with 200 OK; malformed or invalid payloads can return 400 Bad Request.
         /// </summary>
         [HttpPost("sandbox/payment")]
         [EnableRateLimiting(RateLimitPolicyNames.WebhookTolerant)]
@@ -139,13 +141,23 @@ namespace PaymentGateway.Server.Midtrans.Controllers
             // 6. Anti-replay guard based on transaction_time
             if (!TryValidateReplayWindow(transactionTime, out var replayReason))
             {
-                m_securityMetricsService.Increment("webhook_replay_suspected_total", midtransEnv);
-                m_logger.LogWarning(
-                    "Midtrans {Env} webhook rejected by replay guard for order_id {OrderId}. Reason: {Reason}",
-                    midtransEnv,
-                    orderId,
-                    replayReason);
-                return BadRequest();
+                if (string.Equals(replayReason, ReplayReasonTransactionTimeTooOld, StringComparison.Ordinal))
+                {
+                    m_logger.LogInformation(
+                        "Midtrans {Env} webhook transaction_time is outside the replay window for order_id {OrderId}. Continuing with reconciliation before acknowledging.",
+                        midtransEnv,
+                        orderId);
+                }
+                else
+                {
+                    m_securityMetricsService.Increment("webhook_replay_suspected_total", midtransEnv);
+                    m_logger.LogWarning(
+                        "Midtrans {Env} webhook rejected by replay guard for order_id {OrderId}. Reason: {Reason}",
+                        midtransEnv,
+                        orderId,
+                        replayReason);
+                    return BadRequest();
+                }
             }
 
             // 7. Idempotency guard (duplicate notifications are acknowledged without reprocessing)
@@ -276,7 +288,7 @@ namespace PaymentGateway.Server.Midtrans.Controllers
             var now = DateTime.UtcNow;
             if (txTimeUtc < now - replayWindow)
             {
-                reason = "transaction_time too old";
+                reason = ReplayReasonTransactionTimeTooOld;
                 return false;
             }
 
