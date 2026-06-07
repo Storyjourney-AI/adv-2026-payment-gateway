@@ -484,3 +484,6 @@ $RECYCLE.BIN/
 *.swp
 appsettings.development.json
 .docs/barkah/
+
+# MCP server config — contains API keys (Reporter, etc.)
+.mcp.json
