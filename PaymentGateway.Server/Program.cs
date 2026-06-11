@@ -313,9 +313,10 @@ using (var scope = app.Services.CreateScope())
     PaymentGateway.Server.Authorization.Utils.CookieOptionsHelper.Initialize(app.Environment);
 }
 
-// Apply pending EF Core migrations automatically on startup
-using (var scope = app.Services.CreateScope())
+// Apply pending EF Core migrations automatically on startup (only when enabled via config; defaults to false)
+if (app.Configuration.GetValue<bool>("Config:MigrateOnStartup"))
 {
+    using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     await db.Database.MigrateAsync();
 }
