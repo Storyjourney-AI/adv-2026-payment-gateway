@@ -1,5 +1,6 @@
 import type {
   Dto_TransactionListItem,
+  Dto_WebhookForwardStatus,
   TransactionFilterParams,
 } from "../types/transaction.types";
 import type { PaginationWrapper } from "@services/application";
@@ -22,6 +23,15 @@ export async function getTransactions(
 
   return authenticatedFetch<PaginationWrapper<Dto_TransactionListItem>>(
     `/api/transaction?${queryParams}`
+  );
+}
+
+export async function retryWebhookForward(
+  transactionId: string
+): Promise<DataWrapper<Dto_WebhookForwardStatus>> {
+  return authenticatedFetch<Dto_WebhookForwardStatus>(
+    `/api/transaction/${transactionId}/webhook/retry`,
+    { method: "POST" }
   );
 }
 

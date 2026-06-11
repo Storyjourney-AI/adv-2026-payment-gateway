@@ -144,10 +144,17 @@ builder.Services.Configure<MidtransOptions>(builder.Configuration.GetSection("Mi
 builder.Services.Configure<RateLimitSettings>(builder.Configuration.GetSection("RateLimiting"));
 builder.Services.Configure<TurnstileOptions>(builder.Configuration.GetSection("Turnstile"));
 builder.Services.Configure<WebhookHardeningOptions>(builder.Configuration.GetSection("WebhookHardening"));
+builder.Services.Configure<WebhookForwardRetryOptions>(builder.Configuration.GetSection("WebhookForwardRetry"));
 builder.Services.AddScoped<ITurnstileValidationService, TurnstileValidationService>();
 builder.Services.AddScoped<IMidtransTransactionReconciliationService, MidtransTransactionReconciliationService>();
+builder.Services.AddScoped<IWebhookForwardService, WebhookForwardService>();
 builder.Services.AddSingleton<IWebhookReplayGuard, WebhookReplayGuard>();
 builder.Services.AddSingleton<ISecurityMetricsService, SecurityMetricsService>();
+builder.Services.AddSingleton<IWebhookUrlSafetyValidator, WebhookUrlSafetyValidator>();
+
+// Durable webhook-forward retry is core behavior, always on. It naturally no-ops
+// for environments without a registered WebhookUrl (no outbox row is ever enqueued).
+builder.Services.AddHostedService<WebhookForwardRetryService>();
 
 builder.Services.AddRateLimiter(options =>
 {

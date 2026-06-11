@@ -8,12 +8,14 @@ using PaymentGateway.Server.Midtrans.Models;
 using PaymentGateway.Server.Midtrans.Models.Dbs;
 using PaymentGateway.Server.Midtrans.Models.Dtos;
 using PaymentGateway.Server.Midtrans.Services;
+using PaymentGateway.Server.Midtrans.Utils;
 using PaymentGateway.Server.Security.Operations;
 using PaymentGateway.Server.Security.Webhook;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+// WebhookForwardRetryOptions is in PaymentGateway.Server.Midtrans.Models (no extra using needed — already included above)
 
 namespace PaymentGateway.Server.Tests.Midtrans
 {
@@ -334,11 +336,70 @@ namespace PaymentGateway.Server.Tests.Midtrans
             Assert.Equal(JsonValueKind.Null, gatewayFeeBreakdown.ValueKind);
         }
 
+        /// <summary>
+        /// When the inline forward fails (non-2xx), the controller must still return 200 to Midtrans
+        /// and must have called EnqueueAsync (leaving a Pending row for the background drainer to retry).
+        /// MarkDeliveredAsync must NOT be called — the row stays retryable.
+        /// </summary>
+        [Fact]
+        public async Task SandboxWebhook_Returns200_AndEnqueuesRetryableRow_WhenInlineForwardFails()
+        {
+            const string orderId = "order-fail";
+            const string statusCode = "200";
+            const string topLevelGrossAmount = "10000.00";
+            const string serverKey = "sandbox-server-key";
+            var signatureKey = CreateSignature(orderId, statusCode, topLevelGrossAmount, serverKey);
+            var transactionTime = DateTimeOffset.UtcNow
+                .ToOffset(TimeSpan.FromHours(7))
+                .AddMinutes(-1)
+                .ToString("yyyy-MM-dd HH:mm:ss");
+
+            var rawBody = $$"""
+            {
+              "order_id": "{{orderId}}",
+              "status_code": "{{statusCode}}",
+              "gross_amount": "{{topLevelGrossAmount}}",
+              "signature_key": "{{signatureKey}}",
+              "transaction_status": "settlement",
+              "transaction_id": "txn-fail",
+              "transaction_time": "{{transactionTime}}"
+            }
+            """;
+
+            // HTTP client always returns 503 — simulates the child app being down
+            var httpClient = new HttpClient(new StubHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)));
+
+            var trackingService = new TrackingWebhookForwardService();
+
+            var controller = CreateController(
+                new StubHttpClientFactory(httpClient),
+                new StubReconciliationService(CreateReconciliationResult("https://8.8.8.8/webhook")),
+                webhookForwardService: trackingService);
+
+            controller.ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext()
+            };
+            controller.HttpContext.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(rawBody));
+            controller.HttpContext.Request.ContentType = "application/json";
+
+            var result = await controller.SandboxWebhook();
+
+            // Controller must acknowledge to Midtrans regardless of inline forward outcome
+            Assert.IsType<OkResult>(result);
+            // EnqueueAsync was called — row is in outbox for retry
+            Assert.True(trackingService.EnqueueCalled, "EnqueueAsync must be called even when inline forward fails");
+            // MarkDeliveredAsync must NOT have been called — the row stays Pending for the drainer
+            Assert.False(trackingService.MarkDeliveredCalled, "MarkDeliveredAsync must not be called when forward failed");
+        }
+
         private static WebhookController CreateController(
             IHttpClientFactory httpClientFactory,
             IMidtransTransactionReconciliationService reconciliationService,
             WebhookHardeningOptions? hardeningOptions = null,
-            IWebhookReplayGuard? replayGuard = null)
+            IWebhookReplayGuard? replayGuard = null,
+            IWebhookUrlSafetyValidator? urlSafetyValidator = null,
+            IWebhookForwardService? webhookForwardService = null)
         {
             return new WebhookController(
                 Options.Create(new MidtransOptions
@@ -362,10 +423,13 @@ namespace PaymentGateway.Server.Tests.Midtrans
                     ReplayWindowMinutes = 15,
                     DeduplicationWindowMinutes = 60
                 }),
+                Options.Create(new WebhookForwardRetryOptions()),
                 httpClientFactory,
                 replayGuard ?? new ConfigurableWebhookReplayGuard(_ => true),
                 new StubSecurityMetricsService(),
                 reconciliationService,
+                urlSafetyValidator ?? new AlwaysSafeWebhookUrlSafetyValidator(),
+                webhookForwardService ?? new NoOpWebhookForwardService(),
                 NullLogger<WebhookController>.Instance);
         }
 
@@ -467,6 +531,117 @@ namespace PaymentGateway.Server.Tests.Midtrans
             protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             {
                 return Task.FromResult(responseFactory(request));
+            }
+        }
+
+        /// <summary>Stub that approves every URL — mirrors the real validator's behaviour for public IPs like 8.8.8.8.</summary>
+        private sealed class AlwaysSafeWebhookUrlSafetyValidator : IWebhookUrlSafetyValidator
+        {
+            public Task<bool> IsWebhookUrlSafeAsync(string url) => Task.FromResult(true);
+        }
+
+        /// <summary>
+        /// Stub forward service: builds the payload faithfully (so forwarded-body-content tests can verify it)
+        /// but does not persist to any database.
+        /// </summary>
+        private sealed class NoOpWebhookForwardService : IWebhookForwardService
+        {
+            public Task<Db_WebhookForwardOutbox> EnqueueAsync(
+                Guid snapTransactionId,
+                Guid environmentId,
+                string midtransOrderId,
+                string callerOrderId,
+                string targetUrl,
+                string rawBody,
+                MidtransVerifiedStatus verifiedStatus,
+                int maxAttempts,
+                CancellationToken cancellationToken = default)
+            {
+                // Build the payload the same way the real service does so content-inspection tests pass
+                var payload = MidtransWebhookForwardPayloadBuilder.Build(rawBody, verifiedStatus.FeeBreakdown);
+                var row = new Db_WebhookForwardOutbox
+                {
+                    Id = Guid.NewGuid(),
+                    EnvironmentId = environmentId,
+                    SnapTransactionId = snapTransactionId,
+                    MidtransOrderId = midtransOrderId,
+                    CallerOrderId = callerOrderId,
+                    TargetUrl = targetUrl,
+                    Payload = payload,
+                    RawNotificationBody = rawBody,
+                    Status = WebhookForwardStatus.Pending,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                };
+                return Task.FromResult(row);
+            }
+
+            public Task TryDeliverAsync(
+                Db_WebhookForwardOutbox row,
+                WebhookForwardRetryOptions options,
+                CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+            public Task MarkDeliveredAsync(
+                Guid snapTransactionId,
+                int statusCode,
+                CancellationToken cancellationToken = default) => Task.CompletedTask;
+        }
+
+        /// <summary>
+        /// Tracking forward service: records which methods were called so tests can assert on call patterns.
+        /// </summary>
+        private sealed class TrackingWebhookForwardService : IWebhookForwardService
+        {
+            public bool EnqueueCalled { get; private set; }
+            public bool MarkDeliveredCalled { get; private set; }
+            public bool TryDeliverCalled { get; private set; }
+
+            public Task<Db_WebhookForwardOutbox> EnqueueAsync(
+                Guid snapTransactionId,
+                Guid environmentId,
+                string midtransOrderId,
+                string callerOrderId,
+                string targetUrl,
+                string rawBody,
+                MidtransVerifiedStatus verifiedStatus,
+                int maxAttempts,
+                CancellationToken cancellationToken = default)
+            {
+                EnqueueCalled = true;
+                var payload = MidtransWebhookForwardPayloadBuilder.Build(rawBody, verifiedStatus.FeeBreakdown);
+                var row = new Db_WebhookForwardOutbox
+                {
+                    Id = Guid.NewGuid(),
+                    EnvironmentId = environmentId,
+                    SnapTransactionId = snapTransactionId,
+                    MidtransOrderId = midtransOrderId,
+                    CallerOrderId = callerOrderId,
+                    TargetUrl = targetUrl,
+                    Payload = payload,
+                    RawNotificationBody = rawBody,
+                    Status = WebhookForwardStatus.Pending,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                };
+                return Task.FromResult(row);
+            }
+
+            public Task TryDeliverAsync(
+                Db_WebhookForwardOutbox row,
+                WebhookForwardRetryOptions options,
+                CancellationToken cancellationToken = default)
+            {
+                TryDeliverCalled = true;
+                return Task.CompletedTask;
+            }
+
+            public Task MarkDeliveredAsync(
+                Guid snapTransactionId,
+                int statusCode,
+                CancellationToken cancellationToken = default)
+            {
+                MarkDeliveredCalled = true;
+                return Task.CompletedTask;
             }
         }
     }

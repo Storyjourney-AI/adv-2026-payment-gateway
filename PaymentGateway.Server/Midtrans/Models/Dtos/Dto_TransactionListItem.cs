@@ -14,5 +14,11 @@ namespace PaymentGateway.Server.Midtrans.Models.Dtos
         public bool IsSandbox { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
+
+        // Webhook forward outbox fields — null when no outbox row exists for the transaction
+        public string? WebhookForwardStatus { get; set; }
+        public int? WebhookAttemptCount { get; set; }
+        public DateTime? WebhookLastAttemptAt { get; set; }
+        public int? WebhookLastResponseCode { get; set; }
     }
 }

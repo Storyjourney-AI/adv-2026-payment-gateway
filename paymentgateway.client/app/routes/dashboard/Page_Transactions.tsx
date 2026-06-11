@@ -20,7 +20,7 @@ import {
   SelectValue,
 } from "~/components/ui/select";
 import { Loader2, Search, FileDown, Receipt } from "lucide-react";
-import { getTransactions, exportTransactionsPdf } from "@services/transaction";
+import { getTransactions, exportTransactionsPdf, retryWebhookForward } from "@services/transaction";
 import type {
   Dto_TransactionListItem,
   TransactionFilterParams,
@@ -85,6 +85,36 @@ function getStatusLabel(status: string | null): string {
   }
 }
 
+function getWebhookBadgeClass(status: string | null): string {
+  switch (status) {
+    case "Delivered":
+      return "bg-emerald-100 text-emerald-800 border-emerald-200";
+    case "Pending":
+      return "bg-gray-100 text-gray-800 border-gray-200";
+    case "Failed":
+      return "bg-amber-100 text-amber-800 border-amber-200";
+    case "Exhausted":
+      return "bg-red-100 text-red-800 border-red-200";
+    default:
+      return "bg-gray-100 text-gray-500 border-gray-200";
+  }
+}
+
+function getWebhookBadgeLabel(status: string | null): string {
+  switch (status) {
+    case "Delivered":
+      return "Delivered";
+    case "Pending":
+      return "Pending";
+    case "Failed":
+      return "Failed";
+    case "Exhausted":
+      return "Exhausted";
+    default:
+      return "—";
+  }
+}
+
 function formatCurrency(amount: number): string {
   return new Intl.NumberFormat("id-ID", {
     style: "currency",
@@ -118,6 +148,7 @@ export default function Page_Transactions() {
   const [dateTo, setDateTo] = useState(getDefaultDateTo());
 
   const [exporting, setExporting] = useState(false);
+  const [retryingIds, setRetryingIds] = useState<Set<string>>(new Set());
 
   // Debounce search
   useEffect(() => {
@@ -127,10 +158,6 @@ export default function Page_Transactions() {
     }, 300);
     return () => clearTimeout(timer);
   }, [search]);
-
-  useEffect(() => {
-    loadTransactions();
-  }, [page, searchDebounce, status, dateFrom, dateTo]);
 
   const loadTransactions = async () => {
     setLoading(true);
@@ -157,6 +184,30 @@ export default function Page_Transactions() {
       setError("An unexpected error occurred");
     } finally {
       setLoading(false);
+    }
+  };
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { loadTransactions(); }, [page, searchDebounce, status, dateFrom, dateTo]);
+
+  const handleRetry = async (txId: string) => {
+    setRetryingIds((prev) => new Set(prev).add(txId));
+    try {
+      const response = await retryWebhookForward(txId);
+      if (response.success) {
+        toast.success(response.message || "Webhook retry triggered successfully.");
+        await loadTransactions();
+      } else {
+        toast.error(response.message || "Failed to retry webhook forward.");
+      }
+    } catch {
+      toast.error("An unexpected error occurred while retrying the webhook.");
+    } finally {
+      setRetryingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(txId);
+        return next;
+      });
     }
   };
 
@@ -301,6 +352,7 @@ export default function Page_Transactions() {
                   <TableHead>Environment</TableHead>
                   <TableHead className="text-right">Amount</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead>Webhook</TableHead>
                   <TableHead>Type</TableHead>
                   <TableHead>Created At</TableHead>
                 </TableRow>
@@ -337,6 +389,45 @@ export default function Page_Transactions() {
                       >
                         {getStatusLabel(tx.transactionStatus)}
                       </Badge>
+                    </TableCell>
+                    <TableCell>
+                      {tx.webhookForwardStatus === null ? (
+                        <span className="text-muted-foreground text-sm">—</span>
+                      ) : (
+                        <div className="flex flex-col gap-1">
+                          <div className="flex items-center gap-2">
+                            <Badge
+                              variant="outline"
+                              className={getWebhookBadgeClass(tx.webhookForwardStatus)}
+                            >
+                              {getWebhookBadgeLabel(tx.webhookForwardStatus)}
+                            </Badge>
+                            {tx.webhookForwardStatus !== "Delivered" && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-6 px-2 text-xs"
+                                disabled={retryingIds.has(tx.id)}
+                                onClick={() => handleRetry(tx.id)}
+                              >
+                                {retryingIds.has(tx.id) ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  "Retry"
+                                )}
+                              </Button>
+                            )}
+                          </div>
+                          {tx.webhookAttemptCount !== null && (
+                            <span className="text-xs text-muted-foreground">
+                              {tx.webhookAttemptCount} attempt{tx.webhookAttemptCount !== 1 ? "s" : ""}
+                              {tx.webhookLastAttemptAt && (
+                                <> &middot; {new Date(tx.webhookLastAttemptAt).toLocaleString()}</>
+                              )}
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {tx.midtransEnv}

@@ -13,6 +13,22 @@ export interface Dto_TransactionListItem {
   isSandbox: boolean;
   createdAt: string;
   updatedAt: string;
+  // Webhook delivery fields — null when no webhook URL registered or no attempt made
+  webhookForwardStatus: "Pending" | "Delivered" | "Failed" | "Exhausted" | null;
+  webhookAttemptCount: number | null;
+  webhookLastAttemptAt: string | null;
+  webhookLastResponseCode: number | null;
+}
+
+export interface Dto_WebhookForwardStatus {
+  snapTransactionId: string;
+  status: "Pending" | "Delivered" | "Failed" | "Exhausted";
+  attemptCount: number;
+  maxAttempts: number;
+  lastAttemptAt: string | null;
+  nextAttemptAt: string | null;
+  lastResponseCode: number | null;
+  lastError: string | null;
 }
 
 export interface TransactionFilterParams {

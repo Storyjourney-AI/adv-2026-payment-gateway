@@ -15,6 +15,7 @@ namespace PaymentGateway.Server.Databases
         public DbSet<Db_Environment> Environments { get; set; }
         public DbSet<Db_SnapTransaction> SnapTransactions { get; set; }
         public DbSet<Db_ActivityLog> ActivityLogs { get; set; }
+        public DbSet<Db_WebhookForwardOutbox> WebhookForwardOutbox { get; set; }
 
         protected override void OnModelCreating(ModelBuilder builder)
         {
@@ -113,6 +114,29 @@ namespace PaymentGateway.Server.Databases
                 .WithMany()
                 .HasForeignKey(t => t.EnvironmentId)
                 .OnDelete(DeleteBehavior.Restrict);
+
+            builder.Entity<Db_WebhookForwardOutbox>()
+                .ToTable("WebhookForwardOutbox", "payment");
+
+            builder.Entity<Db_WebhookForwardOutbox>()
+                .HasIndex(o => new { o.Status, o.NextAttemptAt })
+                .HasDatabaseName("IX_WebhookForwardOutbox_Status_NextAttemptAt");
+
+            builder.Entity<Db_WebhookForwardOutbox>()
+                .HasIndex(o => o.SnapTransactionId)
+                .IsUnique()
+                .HasDatabaseName("IX_WebhookForwardOutbox_SnapTransactionId");
+
+            builder.Entity<Db_WebhookForwardOutbox>()
+                .HasOne(o => o.Transaction)
+                .WithMany()
+                .HasForeignKey(o => o.SnapTransactionId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // Optimistic concurrency: xmin is a Postgres system column — no DDL migration needed for the token itself,
+            // but EF needs to know about it.
+            builder.Entity<Db_WebhookForwardOutbox>()
+                .UseXminAsConcurrencyToken();
         }
 
         private void ConfigureAuditSchema(ModelBuilder builder)

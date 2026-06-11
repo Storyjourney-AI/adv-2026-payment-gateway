@@ -9,6 +9,7 @@ using PaymentGateway.Server.Databases;
 using PaymentGateway.Server.Midtrans.Models;
 using PaymentGateway.Server.Midtrans.Models.Dbs;
 using PaymentGateway.Server.Midtrans.Models.Dtos;
+using PaymentGateway.Server.Midtrans.Services;
 using QuestPDF.Fluent;
 using QuestPDF.Helpers;
 using QuestPDF.Infrastructure;
@@ -35,20 +36,29 @@ namespace PaymentGateway.Server.Midtrans.Controllers
         private readonly UserManager<Db_ApplicationUser> m_userManager;
         private readonly ILogger<TransactionController> m_logger;
         private readonly MidtransOptions m_midtransOptions;
+        private readonly WebhookForwardRetryOptions m_webhookForwardRetryOptions;
         private readonly IHttpClientFactory m_httpClientFactory;
+        private readonly IWebhookForwardService m_webhookForwardService;
+        private readonly IMidtransTransactionReconciliationService m_reconciliationService;
 
         public TransactionController(
             AppDbContext dbContext,
             UserManager<Db_ApplicationUser> userManager,
             ILogger<TransactionController> logger,
             IOptions<MidtransOptions> midtransOptions,
-            IHttpClientFactory httpClientFactory)
+            IOptions<WebhookForwardRetryOptions> webhookForwardRetryOptions,
+            IHttpClientFactory httpClientFactory,
+            IWebhookForwardService webhookForwardService,
+            IMidtransTransactionReconciliationService reconciliationService)
         {
             m_dbContext = dbContext;
             m_userManager = userManager;
             m_logger = logger;
             m_midtransOptions = midtransOptions.Value;
+            m_webhookForwardRetryOptions = webhookForwardRetryOptions.Value;
             m_httpClientFactory = httpClientFactory;
+            m_webhookForwardService = webhookForwardService;
+            m_reconciliationService = reconciliationService;
         }
 
         /// <summary>
@@ -144,23 +154,37 @@ namespace PaymentGateway.Server.Midtrans.Controllers
 
                 await SyncPendingTransactionsAsync(pagedTransactions);
 
+                // Left-join: fetch outbox rows for the paged transaction IDs in one query
+                var transactionIds = pagedTransactions.Select(t => t.Id).ToList();
+                var outboxByTransactionId = await m_dbContext.WebhookForwardOutbox
+                    .Where(o => transactionIds.Contains(o.SnapTransactionId))
+                    .ToDictionaryAsync(o => o.SnapTransactionId);
+
                 var transactions = pagedTransactions
-                    .Select(t => new Dto_TransactionListItem
+                    .Select(t =>
                     {
-                        Id = t.Id,
-                        CallerOrderId = t.CallerOrderId,
-                        MidtransOrderId = t.MidtransOrderId,
-                        GrossAmount = t.GrossAmount,
-                        TransactionStatus = t.TransactionStatus,
-                        MidtransEnv = t.MidtransEnv,
-                        MidtransTransactionId = t.MidtransTransactionId,
-                        ApplicationName = t.Environment != null && t.Environment.Application != null
-                            ? t.Environment.Application.Name
-                            : "Unknown",
-                        EnvironmentName = t.Environment != null ? t.Environment.Name : "Unknown",
-                        IsSandbox = t.Environment != null && t.Environment.IsSandbox,
-                        CreatedAt = t.CreatedAt,
-                        UpdatedAt = t.UpdatedAt
+                        outboxByTransactionId.TryGetValue(t.Id, out var outbox);
+                        return new Dto_TransactionListItem
+                        {
+                            Id = t.Id,
+                            CallerOrderId = t.CallerOrderId,
+                            MidtransOrderId = t.MidtransOrderId,
+                            GrossAmount = t.GrossAmount,
+                            TransactionStatus = t.TransactionStatus,
+                            MidtransEnv = t.MidtransEnv,
+                            MidtransTransactionId = t.MidtransTransactionId,
+                            ApplicationName = t.Environment != null && t.Environment.Application != null
+                                ? t.Environment.Application.Name
+                                : "Unknown",
+                            EnvironmentName = t.Environment != null ? t.Environment.Name : "Unknown",
+                            IsSandbox = t.Environment != null && t.Environment.IsSandbox,
+                            CreatedAt = t.CreatedAt,
+                            UpdatedAt = t.UpdatedAt,
+                            WebhookForwardStatus = outbox?.Status,
+                            WebhookAttemptCount = outbox?.AttemptCount,
+                            WebhookLastAttemptAt = outbox?.LastAttemptAt,
+                            WebhookLastResponseCode = outbox?.LastResponseCode
+                        };
                     })
                     .ToList();
 
@@ -181,6 +205,149 @@ namespace PaymentGateway.Server.Midtrans.Controllers
                 m_logger.LogError(ex, "Error retrieving transactions");
                 return StatusCode(500, DataWrapper<PaginationWrapper<Dto_TransactionListItem>>.Fail_InternalError(
                     message: "An error occurred while retrieving transactions"));
+            }
+        }
+
+        /// <summary>
+        /// Manually trigger a re-verified webhook forward for a transaction.
+        /// Re-verifies status against Midtrans, rebuilds the payload, and enqueues + attempts an immediate delivery.
+        /// POST /api/transaction/{id}/webhook/retry
+        /// </summary>
+        [HttpPost("{id}/webhook/retry")]
+        public async Task<ActionResult<DataWrapper<Dto_WebhookForwardStatus>>> RetryWebhookForward(Guid id)
+        {
+            try
+            {
+                var userIdClaim = User.FindFirst("sub_id")?.Value;
+                if (string.IsNullOrEmpty(userIdClaim))
+                {
+                    return Unauthorized(DataWrapper<Dto_WebhookForwardStatus>.Unauthorized(
+                        message: "User identity could not be resolved."));
+                }
+
+                // Load transaction with Environment + Application
+                var transaction = await m_dbContext.SnapTransactions
+                    .Include(t => t.Environment)
+                        .ThenInclude(e => e!.Application)
+                    .FirstOrDefaultAsync(t => t.Id == id);
+
+                if (transaction?.Environment == null || transaction.Environment.Application == null)
+                {
+                    return NotFound(DataWrapper<Dto_WebhookForwardStatus>.NotFound(
+                        message: "Transaction not found."));
+                }
+
+                // Ownership check — same pattern as SnapController.TestPurchase
+                var user = await m_userManager.FindByIdAsync(userIdClaim);
+                var isSuperAdmin = user != null && await m_userManager.IsInRoleAsync(user, "Super Admin");
+
+                if (!isSuperAdmin && transaction.Environment.Application.UserId.ToString() != userIdClaim)
+                {
+                    return StatusCode(403, DataWrapper<Dto_WebhookForwardStatus>.Forbidden(
+                        message: "You do not have permission to retry the webhook for this transaction."));
+                }
+
+                var webhookUrl = transaction.Environment.WebhookUrl;
+                if (string.IsNullOrWhiteSpace(webhookUrl))
+                {
+                    return BadRequest(DataWrapper<Dto_WebhookForwardStatus>.BadRequest(
+                        message: "No webhook URL is registered for this transaction's environment."));
+                }
+
+                // Re-verify status against Midtrans
+                MidtransTransactionReconciliationResult? reconciliationResult;
+                try
+                {
+                    reconciliationResult = await m_reconciliationService
+                        .ReconcileByMidtransOrderIdAsync(transaction.MidtransOrderId, HttpContext.RequestAborted);
+                }
+                catch (MidtransStatusVerificationException ex)
+                {
+                    m_logger.LogWarning(ex,
+                        "Midtrans status verification failed during manual webhook retry for transaction {TransactionId}.",
+                        id);
+                    return StatusCode(502, DataWrapper<Dto_WebhookForwardStatus>.Fail(
+                        System.Net.HttpStatusCode.BadGateway,
+                        message: "Could not verify transaction status with Midtrans. Please try again later."));
+                }
+
+                if (reconciliationResult == null)
+                {
+                    return NotFound(DataWrapper<Dto_WebhookForwardStatus>.NotFound(
+                        message: "Transaction not found in Midtrans."));
+                }
+
+                // Build a payload-faithful raw body for the forward:
+                // 1. Prefer the stored RawNotificationBody (preserves signature_key, transaction_time, va_numbers, etc.)
+                // 2. If no stored body exists, fall back to a reconstructed minimal body
+                // 3. If re-verified status differs from the stored body's transaction_status, patch it before forwarding
+                var existingOutboxRow = await m_dbContext.WebhookForwardOutbox
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(o => o.SnapTransactionId == transaction.Id, HttpContext.RequestAborted);
+
+                string rawBodyForEnqueue;
+                if (!string.IsNullOrWhiteSpace(existingOutboxRow?.RawNotificationBody))
+                {
+                    rawBodyForEnqueue = PatchTransactionStatus(
+                        existingOutboxRow.RawNotificationBody,
+                        reconciliationResult.VerifiedStatus.TransactionStatus);
+                }
+                else
+                {
+                    // Fallback: no stored body — reconstruct from reconciliation (reduced field set)
+                    rawBodyForEnqueue = BuildMidtransRawBodyFromReconciliation(transaction, reconciliationResult.VerifiedStatus);
+                }
+
+                // Enqueue / upsert the outbox row (resets to Pending so retry service covers it on failure).
+                // EnqueueAsync returns the tracked row so we can use it for the immediate delivery attempt.
+                var outboxRow = await m_webhookForwardService.EnqueueAsync(
+                    snapTransactionId: transaction.Id,
+                    environmentId: transaction.EnvironmentId,
+                    midtransOrderId: transaction.MidtransOrderId,
+                    callerOrderId: transaction.CallerOrderId,
+                    targetUrl: webhookUrl,
+                    rawBody: rawBodyForEnqueue,
+                    verifiedStatus: reconciliationResult.VerifiedStatus,
+                    maxAttempts: m_webhookForwardRetryOptions.MaxAttempts,
+                    cancellationToken: HttpContext.RequestAborted);
+
+                // Immediate delivery attempt
+                await m_webhookForwardService.TryDeliverAsync(
+                    outboxRow,
+                    m_webhookForwardRetryOptions,
+                    HttpContext.RequestAborted);
+
+                // Re-read final state (TryDeliverAsync mutates the tracked entity and saves)
+                var finalRow = await m_dbContext.WebhookForwardOutbox
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(o => o.SnapTransactionId == transaction.Id, HttpContext.RequestAborted);
+
+                if (finalRow == null)
+                {
+                    return StatusCode(500, DataWrapper<Dto_WebhookForwardStatus>.Fail_InternalError(
+                        message: "Outbox row could not be found after enqueue."));
+                }
+
+                var statusDto = new Dto_WebhookForwardStatus
+                {
+                    SnapTransactionId = finalRow.SnapTransactionId,
+                    Status = finalRow.Status,
+                    AttemptCount = finalRow.AttemptCount,
+                    MaxAttempts = finalRow.MaxAttempts,
+                    LastAttemptAt = finalRow.LastAttemptAt,
+                    NextAttemptAt = finalRow.NextAttemptAt,
+                    LastResponseCode = finalRow.LastResponseCode,
+                    LastError = finalRow.LastError
+                };
+
+                return Ok(DataWrapper<Dto_WebhookForwardStatus>.Succeed(
+                    statusDto, message: "Webhook forward retry triggered successfully."));
+            }
+            catch (Exception ex)
+            {
+                m_logger.LogError(ex, "Error triggering webhook forward retry for transaction {TransactionId}", id);
+                return StatusCode(500, DataWrapper<Dto_WebhookForwardStatus>.Fail_InternalError(
+                    message: "An error occurred while triggering the webhook retry."));
             }
         }
 
@@ -386,6 +553,56 @@ namespace PaymentGateway.Server.Midtrans.Controllers
                 return StatusCode(500, DataWrapper<object>.Fail_InternalError(
                     message: "An error occurred while generating the PDF export"));
             }
+        }
+
+        /// <summary>
+        /// Patches the <c>transaction_status</c> field in a stored raw Midtrans notification body
+        /// so that a manual retry forwards the re-verified status rather than the original (potentially stale) one.
+        /// All other fields (signature_key, transaction_time, va_numbers, etc.) are preserved byte-faithfully.
+        /// </summary>
+        private static string PatchTransactionStatus(string rawBody, string newTransactionStatus)
+        {
+            try
+            {
+                var node = System.Text.Json.Nodes.JsonNode.Parse(rawBody);
+                if (node is System.Text.Json.Nodes.JsonObject obj)
+                {
+                    obj["transaction_status"] = newTransactionStatus;
+                    return obj.ToJsonString();
+                }
+            }
+            catch
+            {
+                // If parsing fails, fall back to the original body unchanged
+            }
+
+            return rawBody;
+        }
+
+        /// <summary>
+        /// Reconstructs a minimal Midtrans-formatted JSON body from a reconciliation result so that
+        /// <see cref="IWebhookForwardService.EnqueueAsync"/> can pass it through the payload builder.
+        /// Used only as a fallback when no stored RawNotificationBody is available.
+        /// </summary>
+        private static string BuildMidtransRawBodyFromReconciliation(
+            Db_SnapTransaction transaction,
+            MidtransVerifiedStatus verifiedStatus)
+        {
+            // Produce a snake_case JSON matching the Midtrans notification shape expected by
+            // MidtransWebhookForwardPayloadBuilder.Build (which just appends gateway_fee_breakdown).
+            var node = new System.Text.Json.Nodes.JsonObject
+            {
+                ["order_id"] = transaction.MidtransOrderId,
+                ["transaction_status"] = verifiedStatus.TransactionStatus,
+                ["gross_amount"] = verifiedStatus.GrossAmount,
+                ["transaction_id"] = verifiedStatus.TransactionId,
+                ["payment_type"] = verifiedStatus.PaymentType,
+                ["status_code"] = verifiedStatus.StatusCode,
+                ["status_message"] = verifiedStatus.StatusMessage,
+                ["fraud_status"] = verifiedStatus.FraudStatus
+            };
+
+            return node.ToJsonString();
         }
 
         private static byte[] GeneratePdf(
