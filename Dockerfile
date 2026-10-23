@@ -9,7 +9,7 @@ EXPOSE 8081
 
 
 # Stage 1: Build Node.js frontend
-FROM node:20-alpine AS frontend-build
+FROM node:24.22.1-alpine3.23 AS frontend-build
 WORKDIR /app/frontend
 COPY paymentgateway.client/package*.json ./
 RUN npm ci
